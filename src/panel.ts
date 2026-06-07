@@ -86,7 +86,7 @@ function renderHelperSection() {
         <button id="cp_copy_windows_helper" class="menu_button">复制 Windows 命令</button>
       </div>
       <div class="cp-command-block">
-        <div class="cp-command-title">Linux / macOS Bash</div>
+        <div class="cp-command-title">Termux / Linux / macOS Bash</div>
         <textarea id="cp_helper_unix_command" class="cp-command" rows="4" readonly>${escapeHtml(getUnixHelperCommand())}</textarea>
         <button id="cp_copy_unix_helper" class="menu_button">复制 Linux/macOS 命令</button>
       </div>

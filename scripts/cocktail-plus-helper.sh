@@ -300,6 +300,61 @@ install_backend_plugin() {
   say_warn '请重启 SillyTavern 后生效。'
 }
 
+restore_cocktail_plus_index_html() {
+  ensure_config_selected || return 1
+  local index_path="$SELECTED_ROOT/public/index.html"
+  if [ ! -f "$index_path" ]; then
+    say_warn "index.html 不存在，跳过恢复：$index_path"
+    return 0
+  fi
+
+  if ! command -v node >/dev/null 2>&1; then
+    say_warn '找不到 node，无法自动恢复 index.html。请手动删除 cocktail-plus early bridge 注入块。'
+    return 0
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  node - "$index_path" "$tmp" <<'NODE'
+const fs = require('fs');
+const [indexPath, tmpPath] = process.argv.slice(2);
+const markerStart = '<!-- cocktail-plus early bridge start -->';
+const markerEnd = '<!-- cocktail-plus early bridge end -->';
+function escRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+let html = fs.readFileSync(indexPath, 'utf8');
+const originalHtml = html;
+html = html.replace(new RegExp(escRegExp(markerStart) + '[\\s\\S]*?' + escRegExp(markerEnd) + '\\s*', 'g'), '');
+html = html.replace(/<script\b[^>]*\bid=["']cocktail-plus-module-import-map["'][\s\S]*?<\/script>\s*/gi, '');
+html = html.replace(/<script\b[^>]*\bid=["']cocktail-plus-early-bridge["'][\s\S]*?<\/script>\s*/gi, '');
+html = html.replace(/<script\b(?=[^>]*\bdata-cp-module-proxy-original=(["'])(?<orig>[^"']+)\1)[^>]*>[\s\S]*?<\/script>/gi, (tag, _q, orig) => {
+  let restored = tag.replace(/\bsrc\s*=\s*(["'])(?:(?!\1)[\s\S])*?\1/i, () => `src="${orig}"`);
+  restored = restored.replace(/\s*data-cp-module-proxy-original=(["'])(?:(?!\1)[\s\S])*?\1/i, '');
+  return restored;
+});
+html = html.replace(/\n{3,}/g, '\n\n');
+if (html === originalHtml) process.exit(2);
+fs.writeFileSync(tmpPath, html, 'utf8');
+NODE
+  local rc=$?
+  if [ "$rc" -eq 2 ]; then
+    rm -f "$tmp"
+    say_warn 'index.html 未发现 cocktail-plus 注入或 module proxy 改写。'
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp"
+    say_warn '恢复 index.html 失败。'
+    return 1
+  fi
+
+  local backup
+  backup="$(backup_file "$index_path")"
+  mv "$tmp" "$index_path"
+  [ -n "$backup" ] && printf '已备份 index.html：%s\n' "$backup"
+  say_ok 'index.html 已恢复，cocktail-plus Early Bridge 注入已移除。'
+}
+
+
 remove_backend_plugin() {
   ensure_config_selected || return 1
   say_title '删除后端扩展'
@@ -307,6 +362,7 @@ remove_backend_plugin() {
   if [ ! -e "$dst" ]; then say_warn "后端插件不存在：$dst"; return 0; fi
   read -r -p "确认删除 $dst ? (y/N) " confirm
   if ! [[ "$confirm" =~ ^[Yy] ]]; then say_warn '已取消'; return 0; fi
+  restore_cocktail_plus_index_html || true
   rm -rf "$dst"
   say_ok '后端插件已删除。'
   say_warn '请重启 SillyTavern 后生效。'

@@ -315,6 +315,56 @@ function Install-BackendPlugin {
     Write-Warn '请重启 SillyTavern 后生效。'
 }
 
+function Restore-CocktailPlusIndexHtml {
+    Ensure-ConfigSelected
+    $indexPath = Join-Path $Script:SelectedRoot 'public\index.html'
+    if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
+        Write-Warn "index.html 不存在，跳过恢复：$indexPath"
+        return
+    }
+
+    $html = Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8
+    $next = $html
+    $markerStart = '<!-- cocktail-plus early bridge start -->'
+    $markerEnd = '<!-- cocktail-plus early bridge end -->'
+    $markerRegex = "(?s)$([regex]::Escape($markerStart)).*?$([regex]::Escape($markerEnd))\s*"
+
+    # Remove Early Bridge block first. This usually also removes the importmap block.
+    $next = [regex]::Replace($next, $markerRegex, '')
+
+    # Safety cleanup for partially edited HTML: remove remaining cocktail-plus importmap / bridge script tags.
+    $next = [regex]::Replace($next, '<script\b[^>]*\bid=["'']cocktail-plus-module-import-map["''][\s\S]*?</script>\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $next = [regex]::Replace($next, '<script\b[^>]*\bid=["'']cocktail-plus-early-bridge["''][\s\S]*?</script>\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+    # Restore module proxy tags back to their original src.
+    $scriptRegex = '<script\b(?=[^>]*\bdata-cp-module-proxy-original=(["''])(?<orig>[^"'']+)\1)[^>]*>[\s\S]*?</script>'
+    $next = [regex]::Replace($next, $scriptRegex, {
+        param($match)
+        $tag = $match.Value
+        $orig = $match.Groups['orig'].Value
+        if ($tag -match '\bsrc\s*=\s*"[^"]*"') {
+            $tag = [regex]::Replace($tag, '\bsrc\s*=\s*"[^"]*"', "src=`"$orig`"", 1)
+        } elseif ($tag -match "\bsrc\s*=\s*'[^']*'") {
+            $tag = [regex]::Replace($tag, "\bsrc\s*=\s*'[^']*'", "src=`"$orig`"", 1)
+        }
+        $tag = [regex]::Replace($tag, '\s*data-cp-module-proxy-original="[^"]*"', '', 1)
+        $tag = [regex]::Replace($tag, "\s*data-cp-module-proxy-original='[^']*'", '', 1)
+        return $tag
+    }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+    $next = [regex]::Replace($next, "\n{3,}", "`n`n")
+    if ($next -eq $html) {
+        Write-Warn 'index.html 未发现 cocktail-plus 注入或 module proxy 改写。'
+        return
+    }
+
+    $backup = Backup-File $indexPath
+    Set-Content -LiteralPath $indexPath -Value $next -Encoding UTF8
+    if ($backup) { Write-Host "已备份 index.html：$backup" }
+    Write-Ok 'index.html 已恢复，cocktail-plus Early Bridge 注入已移除。'
+}
+
+
 function Remove-BackendPlugin {
     Ensure-ConfigSelected
     Write-Title '删除后端扩展'
@@ -325,6 +375,7 @@ function Remove-BackendPlugin {
     }
     $confirm = Read-Host "确认删除 $dst ? (y/N)"
     if ($confirm.Trim().ToLower() -notin @('y', 'yes')) { Write-Warn '已取消'; return }
+    Restore-CocktailPlusIndexHtml
     Remove-Item -LiteralPath $dst -Recurse -Force
     Write-Ok '后端插件已删除。'
     Write-Warn '请重启 SillyTavern 后生效。'

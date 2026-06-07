@@ -1122,4 +1122,34 @@ if (document.readyState === "loading") {
 } else {
   void init();
 }
+async function onCocktailPlusDelete() {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = setTimeout(() => {
+    try {
+      controller == null ? void 0 : controller.abort();
+    } catch {
+    }
+  }, 2500);
+  try {
+    await fetch("/api/plugins/cocktail-plus/early/uninstall", {
+      method: "POST",
+      headers: (() => {
+        var _a, _b;
+        try {
+          return ((_b = (_a = getCtx()) == null ? void 0 : _a.getRequestHeaders) == null ? void 0 : _b.call(_a)) ?? { "Content-Type": "application/json" };
+        } catch {
+          return { "Content-Type": "application/json" };
+        }
+      })(),
+      body: JSON.stringify({ noBackup: false }),
+      cache: "no-store",
+      signal: controller == null ? void 0 : controller.signal
+    }).catch(() => null);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+export {
+  onCocktailPlusDelete
+};
 //# sourceMappingURL=index.js.map

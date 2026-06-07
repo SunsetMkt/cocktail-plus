@@ -6,6 +6,9 @@
   "js": "dist/index.js",
   "css": "dist/style.css",
   "author": "Limerence",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "hooks": {
+    "delete": "onCocktailPlusDelete"
+  },
   "description": "通过可选后端 Server Plugin + Service Worker 对 SillyTavern 原始接口进行前后端优化；当前优化 /version 与 /api/characters/all。"
 }
