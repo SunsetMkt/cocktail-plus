@@ -627,7 +627,7 @@ function renderUpdateSection() {
   const status = u.checking ? "检查中…" : u.error ? `检查失败：${escapeHtml(u.error)}` : !u.checked ? "尚未检查" : u.updateAvailable ? `发现新版本：${escapeHtml(u.latestVersion)}（当前 ${escapeHtml(u.currentVersion)}）` : `当前已是最新版本：${escapeHtml(u.currentVersion ?? "-")}`;
   return `
     <div class="cp-section">
-      <b>更新检查</b>
+      <b>更新检查（后端扩展和前端扩展更新是独立的，需要分别进行更新）</b>
       <div class="cp-muted">
         远端：${getUpdateRepoUrls().map(
     (url, index) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${index === 0 ? "GitHub" : "Gitee"}</a>`

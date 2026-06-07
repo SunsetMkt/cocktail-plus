@@ -477,7 +477,7 @@ function clamp(value, min, max) {
   try {
     while (true) {
       const config = readConfig();
-      console.log('\n维护 cocktail-plus 后端 config.json');
+      console.log('\n修改 cocktail-plus 后端插件配置项');
       console.log('配置文件：' + configPath);
       schema.forEach((item, index) => {
         const [key, label] = item;
@@ -799,15 +799,28 @@ show_current_selection() {
 
 show_menu() {
   say_title 'cocktail-plus 后端插件助手'
-  printf '[1] 自动探测 SillyTavern/config.yaml（进程优先，失败后扫描文件）\n'
-  printf '[2] 手动输入 SillyTavern/config.yaml 路径\n'
-  printf '[3] 安装/重新安装 cocktail-plus 后端扩展，并开启 enableServerPlugins\n'
-  printf '[4] 删除 cocktail-plus 后端扩展文件夹（恢复 index.html）\n'
-  printf '[5] 开启 enableServerPlugins: true\n'
-  printf '[6] 关闭 enableServerPlugins: false（会禁用所有后端插件）\n'
-  printf '[7] 维护 cocktail-plus 后端 config.json\n'
-  printf '[8] 重启 SillyTavern（尽力自动重启）\n'
-  printf '[9] 检查/更新 cocktail-plus 后端扩展（GitHub 优先，Gitee 备用）\n'
+  printf '\033[36m使用教程：\033[0m\n'
+  printf '* 输入1或2 配置酒馆配置文件路径\n'
+  printf '* 输入3安装 cocktail-plus 后端扩展\n'
+  printf '\n'
+  printf '如果需要卸载，则输入4\n'
+  printf '\n'
+  printf '如果需要修改配置，则输入7\n'
+  printf '\n'
+  printf '重启酒馆本体，输入8\n'
+  printf '\n'
+  printf '后端扩展和前端扩展更新是独立的，需要分别进行更新\n'
+  printf '后端扩展更新输入9，前端扩展更新在酒馆网页进行更新\n'
+  printf '\n'
+  printf '[1] 自动探测 SillyTavern/config.yaml（酒馆配置文件）\n'
+  printf '[2] 手动输入 SillyTavern/config.yaml（酒馆配置文件）路径\n'
+  printf '[3] 安装/重新安装 cocktail-plus 后端扩展，会自动开启酒馆使用后端扩展权限\n'
+  printf '[4] 卸载 cocktail-plus 后端扩展（恢复 index.html）\n'
+  printf '[5] 允许酒馆使用后端扩展\n'
+  printf '[6] 禁止酒馆使用后端扩展\n'
+  printf '[7] 修改 cocktail-plus 后端插件配置项\n'
+  printf '[8] 重启 SillyTavern 酒馆本体\n'
+  printf '[9] 更新 cocktail-plus 后端扩展版本\n'
   printf '[10] 显示当前选择\n'
   printf '[0] 退出\n'
 }

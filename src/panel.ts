@@ -111,7 +111,7 @@ function renderUpdateSection() {
 
   return `
     <div class="cp-section">
-      <b>更新检查</b>
+      <b>更新检查（后端扩展和前端扩展更新是独立的，需要分别进行更新）</b>
       <div class="cp-muted">
         远端：${getUpdateRepoUrls().map((url, index) =>
           `<a href="${url}" target="_blank" rel="noopener noreferrer">${index === 0 ? 'GitHub' : 'Gitee'}</a>`

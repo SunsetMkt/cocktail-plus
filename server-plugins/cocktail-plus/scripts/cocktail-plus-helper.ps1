@@ -505,7 +505,7 @@ function Invoke-BackendConfigMenu {
     while ($true) {
         $schema = @(Get-BackendConfigSchema)
         $config = Read-BackendConfig
-        Write-Title '维护 cocktail-plus 后端 config.json'
+        Write-Title '修改 cocktail-plus 后端插件配置项'
         Write-Host "配置文件：$(Get-BackendConfigPath)"
         for ($i = 0; $i -lt $schema.Count; $i++) {
             $item = $schema[$i]
@@ -821,15 +821,28 @@ function Show-CurrentSelection {
 
 function Show-Menu {
     Write-Title 'cocktail-plus 后端插件助手'
-    Write-Host '[1] 自动探测 SillyTavern/config.yaml（进程优先，失败后扫描文件）'
-    Write-Host '[2] 手动输入 SillyTavern/config.yaml 路径'
-    Write-Host '[3] 安装/重新安装 cocktail-plus 后端扩展，并开启 enableServerPlugins'
-    Write-Host '[4] 删除 cocktail-plus 后端扩展文件夹（恢复 index.html）'
-    Write-Host '[5] 开启 enableServerPlugins: true'
-    Write-Host '[6] 关闭 enableServerPlugins: false（会禁用所有后端插件）'
-    Write-Host '[7] 维护 cocktail-plus 后端 config.json'
-    Write-Host '[8] 重启 SillyTavern（尽力自动重启）'
-    Write-Host '[9] 检查/更新 cocktail-plus 后端扩展（GitHub 优先，Gitee 备用）'
+    Write-Host '使用教程：' -ForegroundColor Cyan
+    Write-Host '* 输入1或2 配置酒馆配置文件路径'
+    Write-Host '* 输入3安装 cocktail-plus 后端扩展'
+    Write-Host ''
+    Write-Host '如果需要卸载，则输入4'
+    Write-Host ''
+    Write-Host '如果需要修改配置，则输入7'
+    Write-Host ''
+    Write-Host '重启酒馆本体，输入8'
+    Write-Host ''
+    Write-Host '后端扩展和前端扩展更新是独立的，需要分别进行更新'
+    Write-Host '后端扩展更新输入9，前端扩展更新在酒馆网页进行更新'
+    Write-Host ''
+    Write-Host '[1] 自动探测 SillyTavern/config.yaml（酒馆配置文件）'
+    Write-Host '[2] 手动输入 SillyTavern/config.yaml（酒馆配置文件）路径'
+    Write-Host '[3] 安装/重新安装 cocktail-plus 后端扩展，会自动开启酒馆使用后端扩展权限'
+    Write-Host '[4] 卸载 cocktail-plus 后端扩展（恢复 index.html）'
+    Write-Host '[5] 允许酒馆使用后端扩展'
+    Write-Host '[6] 禁止酒馆使用后端扩展'
+    Write-Host '[7] 修改 cocktail-plus 后端插件配置项'
+    Write-Host '[8] 重启 SillyTavern 酒馆本体'
+    Write-Host '[9] 更新 cocktail-plus 后端扩展版本'
     Write-Host '[10] 显示当前选择'
     Write-Host '[0] 退出'
 }
