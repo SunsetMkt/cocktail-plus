@@ -316,9 +316,12 @@ ${fastRoutes}
   state.settingsSave = state.settingsSave || { baselineHash: '', captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0 };
   state.chatSave = state.chatSave || { baselineCount: 0, captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0, evictions: 0 };
   state.charactersLoad = state.charactersLoad || { active: false, phase: 'idle', cache: '', startedAt: 0, updatedAt: 0, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, message: '' };
+  state.recentChatsLoad = state.recentChatsLoad || { active: false, phase: 'idle', startedAt: 0, updatedAt: 0, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, status: null, message: '', error: null };
   var characterProgressStatusTimer = null;
   var characterProgressRenderTimer = null;
   var characterProgressRowTimer = null;
+  var recentProgressRenderTimer = null;
+  var recentProgressRemoveTimer = null;
 
   function cpNumber(value, fallback) {
     if (value === null || value === undefined || value === '') return fallback;
@@ -534,6 +537,178 @@ ${fastRoutes}
     };
     characterProgressStatusTimer = setTimeout(poll, 300);
   }
+
+  function cpGetRecentChatList() {
+    try { return document.querySelector('#chat .welcomePanel .recentChatList') || document.querySelector('.welcomePanel .recentChatList'); } catch (_) { return null; }
+  }
+
+  function cpEnsureRecentProgressStyle() {
+    try {
+      if (document.getElementById('cocktail-plus-recent-load-style')) return;
+      var style = document.createElement('style');
+      style.id = 'cocktail-plus-recent-load-style';
+      style.textContent = [
+        '#cocktail-plus-recent-load-progress{box-sizing:border-box;width:100%;margin:4px 0 8px;padding:12px;border:1px solid rgba(120,220,255,.35);border-radius:10px;background:linear-gradient(180deg,rgba(28,43,58,.96),rgba(18,26,36,.96));box-shadow:0 8px 24px rgba(0,0,0,.16);color:#e9f8ff;font-size:13px;line-height:1.45;}',
+        '#cocktail-plus-recent-load-progress .cp-recent-progress-title{font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px;}',
+        '#cocktail-plus-recent-load-progress .cp-recent-progress-title:before{content:"";display:inline-block;width:8px;height:8px;border-radius:999px;background:#72e0ff;box-shadow:0 0 10px #72e0ff;}',
+        '#cocktail-plus-recent-load-progress .cp-recent-progress-message{opacity:.92;margin-bottom:8px;}',
+        '#cocktail-plus-recent-load-progress .cp-recent-progress-track{position:relative;overflow:hidden;height:8px;border-radius:999px;background:rgba(255,255,255,.12);}',
+        '#cocktail-plus-recent-load-progress .cp-recent-progress-bar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#6ee7ff,#8fffb8);transition:width .18s ease;}',
+        '#cocktail-plus-recent-load-progress.cp-indeterminate .cp-recent-progress-bar{width:38%;animation:cpRecentIndeterminate 1.2s ease-in-out infinite;}',
+        '#cocktail-plus-recent-load-progress .cp-recent-progress-meta{margin-top:8px;display:flex;flex-wrap:wrap;gap:8px 12px;opacity:.78;font-size:12px;}',
+        '.welcomePanel .recentChatList.cp-recent-loading .noRecentChat{display:none!important;}',
+        '@keyframes cpRecentIndeterminate{0%{transform:translateX(-110%)}50%{transform:translateX(60%)}100%{transform:translateX(260%)}}'
+      ].join('');
+      (document.head || document.documentElement).appendChild(style);
+    } catch (_) {}
+  }
+
+  function cpEnsureRecentProgressElement() {
+    var list = cpGetRecentChatList();
+    if (!list) return null;
+    cpEnsureRecentProgressStyle();
+    list.classList.add('cp-recent-loading');
+    var el = document.getElementById('cocktail-plus-recent-load-progress');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cocktail-plus-recent-load-progress';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.innerHTML = '<div class="cp-recent-progress-title">鸡尾酒+ 正在加载最近消息</div><div class="cp-recent-progress-message"></div><div class="cp-recent-progress-track"><div class="cp-recent-progress-bar"></div></div><div class="cp-recent-progress-meta"></div>';
+    }
+    if (el.parentNode !== list) list.insertBefore(el, list.firstChild || null);
+    return el;
+  }
+
+  function cpRecentProgressMessage(data) {
+    if (data && data.message) return data.message;
+    var phase = String(data && data.phase || '');
+    if (phase === 'requesting' || phase === 'starting') return '等待 /recent 返回最近消息…';
+    if (phase === 'downloading') return '正在接收最近消息列表…';
+    if (phase === 'rendering' || phase === 'parsing') return '正在解析并渲染最近消息…';
+    if (phase === 'rendered') return '最近消息已显示';
+    if (phase === 'cancelled') return '最近消息加载已取消';
+    if (phase === 'error') return '最近消息加载遇到问题。';
+    return '正在加载最近消息…';
+  }
+
+  function cpRenderRecentProgress() {
+    try {
+      var data = state.recentChatsLoad || {};
+      if (!data.active) return;
+      var el = cpEnsureRecentProgressElement();
+      if (!el) return;
+      var percent = cpClampPercent(data.percent);
+      var determinate = percent !== null;
+      el.classList.toggle('cp-indeterminate', !determinate);
+      var bar = el.querySelector('.cp-recent-progress-bar');
+      if (bar && determinate) bar.style.width = percent.toFixed(1) + '%';
+      var msg = el.querySelector('.cp-recent-progress-message');
+      if (msg) msg.textContent = cpRecentProgressMessage(data);
+      var parts = [];
+      var received = Math.max(0, cpNumber(data.bytesReceived, 0) || 0);
+      var total = cpNumber(data.totalBytes, null);
+      if (total && total > 0) parts.push('已接收 ' + cpFormatBytes(received) + ' / ' + cpFormatBytes(total));
+      else if (received > 0) parts.push('已接收 ' + cpFormatBytes(received));
+      if (determinate) parts.push(percent.toFixed(1) + '%');
+      if ((cpNumber(data.speedBps, 0) || 0) > 0) parts.push(cpFormatBytes(data.speedBps) + '/s');
+      if (cpNumber(data.etaMs, null) !== null && (cpNumber(data.etaMs, 0) || 0) > 0) parts.push('剩余 ' + cpFormatDuration(data.etaMs));
+      if (data.startedAt) {
+        var currentPhase = String(data.phase || '');
+        parts.push((currentPhase === 'requesting' || currentPhase === 'starting' ? '等待 ' : '已用 ') + cpFormatDuration(Date.now() - data.startedAt));
+      }
+      if (data.status) parts.push('HTTP ' + data.status);
+      if (data.phase) parts.push('阶段 ' + data.phase);
+      if (data.error) parts.push('错误 ' + data.error);
+      var meta = el.querySelector('.cp-recent-progress-meta');
+      if (meta) meta.textContent = parts.join(' · ');
+    } catch (error) {
+      remember('recent.progress.render-error', { error: String(error && error.message || error) });
+    }
+  }
+
+  function cpStartRecentRenderTimer() {
+    if (recentProgressRenderTimer) return;
+    recentProgressRenderTimer = setInterval(function () {
+      if (!state.recentChatsLoad || !state.recentChatsLoad.active) { clearInterval(recentProgressRenderTimer); recentProgressRenderTimer = null; return; }
+      cpRenderRecentProgress();
+    }, 500);
+  }
+
+  function cpUpdateRecentProgress(patch) {
+    var now = Date.now();
+    var previous = state.recentChatsLoad || {};
+    var next = Object.assign({}, previous, patch || {});
+    next.active = patch && patch.active !== undefined ? !!patch.active : true;
+    next.startedAt = patch && patch.startedAt !== undefined ? patch.startedAt : (next.startedAt || now);
+    next.updatedAt = now;
+    next.bytesReceived = Math.max(0, cpNumber(next.bytesReceived, 0) || 0);
+    next.totalBytes = cpNumber(next.totalBytes, null);
+    if (!(next.totalBytes > 0)) next.totalBytes = null;
+    next.speedBps = Math.max(0, cpNumber(next.speedBps, 0) || 0);
+    next.percent = cpClampPercent(next.percent);
+    next.etaMs = cpNumber(next.etaMs, null);
+    next.status = cpNumber(next.status, null);
+    state.recentChatsLoad = next;
+    cpStartRecentRenderTimer();
+    try { window.dispatchEvent(new CustomEvent('cocktail-plus:recent-progress', { detail: Object.assign({}, next) })); } catch (_) {}
+    cpRenderRecentProgress();
+    return next;
+  }
+
+  function cpStartRecentChatsProgress() {
+    if (recentProgressRemoveTimer) { clearTimeout(recentProgressRemoveTimer); recentProgressRemoveTimer = null; }
+    return cpUpdateRecentProgress({ active: true, phase: 'requesting', startedAt: Date.now(), updatedAt: Date.now(), bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, status: null, error: null, message: '正在加载最近消息…' });
+  }
+
+  function cpRemoveRecentProgress() {
+    try {
+      if (recentProgressRemoveTimer) { clearTimeout(recentProgressRemoveTimer); recentProgressRemoveTimer = null; }
+      state.recentChatsLoad.active = false;
+      var list = cpGetRecentChatList();
+      if (list) list.classList.remove('cp-recent-loading');
+      var el = document.getElementById('cocktail-plus-recent-load-progress');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    } catch (_) {}
+  }
+
+  function cpFinishRecentChatsProgress(reason, delayMs) {
+    var phase = reason === 'cancelled' ? 'cancelled' : 'rendered';
+    var message = reason === 'cancelled' ? '最近消息加载已取消' : '最近消息已显示';
+    cpUpdateRecentProgress({ phase: phase, message: message, percent: 100, etaMs: 0, error: null });
+    if (recentProgressRemoveTimer) { clearTimeout(recentProgressRemoveTimer); recentProgressRemoveTimer = null; }
+    recentProgressRemoveTimer = setTimeout(cpRemoveRecentProgress, Math.max(0, delayMs === undefined ? 600 : delayMs));
+  }
+
+  function cpFailRecentChatsProgress(error, delayMs) {
+    cpUpdateRecentProgress({ phase: 'error', message: '最近消息加载遇到问题。', error: String(error && error.message || error), etaMs: null });
+    if (recentProgressRemoveTimer) { clearTimeout(recentProgressRemoveTimer); recentProgressRemoveTimer = null; }
+    recentProgressRemoveTimer = setTimeout(cpRemoveRecentProgress, Math.max(0, delayMs === undefined ? 5000 : delayMs));
+  }
+
+  function cpParseContentLength(headers) {
+    try {
+      var raw = headers && headers.get && headers.get('content-length');
+      var value = Number(raw);
+      return Number.isFinite(value) && value > 0 ? value : null;
+    } catch (_) { return null; }
+  }
+
+  function cpRecentTransferPatch(phase, startedAt, bytesReceived, totalBytes, extra) {
+    var elapsedMs = Math.max(1, Date.now() - startedAt);
+    var speedBps = bytesReceived > 0 ? bytesReceived / (elapsedMs / 1000) : 0;
+    var hasTotal = Number.isFinite(totalBytes) && totalBytes > 0;
+    var percent = hasTotal ? Math.max(0, Math.min(100, bytesReceived / totalBytes * 100)) : null;
+    var etaMs = hasTotal && speedBps > 0 ? Math.max(0, (totalBytes - bytesReceived) / speedBps * 1000) : null;
+    return Object.assign({ phase: phase, startedAt: startedAt, bytesReceived: bytesReceived, totalBytes: hasTotal ? totalBytes : null, speedBps: speedBps, percent: percent, etaMs: etaMs }, extra || {});
+  }
+
+  state.startRecentChatsProgress = cpStartRecentChatsProgress;
+  state.updateRecentChatsProgress = cpUpdateRecentProgress;
+  state.finishRecentChatsProgress = cpFinishRecentChatsProgress;
+  state.failRecentChatsProgress = cpFailRecentChatsProgress;
+
+
 
   state.updateCharactersLoadProgress = cpUpdateCharacterProgress;
   state.finishCharactersLoadProgress = cpFinishCharacterProgress;
@@ -1771,6 +1946,63 @@ ${fastRoutes}
     return fallbackResponse;
   }
 
+  function cpHeadersFromResponse(response) {
+    var headers = new Headers();
+    try { response.headers.forEach(function (value, key) { headers.set(key, value); }); } catch (_) {}
+    return headers;
+  }
+
+  async function cpReadRecentResponseWithProgress(response, startedAt) {
+    var totalBytes = cpParseContentLength(response.headers);
+    var bytesReceived = 0;
+    var lastEmitAt = 0;
+    cpUpdateRecentProgress(cpRecentTransferPatch('downloading', startedAt, 0, totalBytes, { status: response.status, message: '正在接收最近消息列表…' }));
+
+    if (response.body && typeof response.body.getReader === 'function') {
+      var reader = response.body.getReader();
+      var chunks = [];
+      while (true) {
+        var next = await reader.read();
+        if (next.done) break;
+        var value = next.value;
+        if (!value) continue;
+        chunks.push(value);
+        bytesReceived += value.byteLength || value.length || 0;
+        var now = Date.now();
+        if (now - lastEmitAt >= 100) {
+          lastEmitAt = now;
+          cpUpdateRecentProgress(cpRecentTransferPatch('downloading', startedAt, bytesReceived, totalBytes, { status: response.status, message: '正在接收最近消息列表…' }));
+        }
+      }
+      var finalTotal = totalBytes || bytesReceived;
+      cpUpdateRecentProgress(cpRecentTransferPatch('rendering', startedAt, bytesReceived, finalTotal, { status: response.status, percent: finalTotal ? 100 : null, etaMs: 0, message: '正在解析并渲染最近消息…' }));
+      return { body: new Blob(chunks), bytesReceived: bytesReceived, totalBytes: finalTotal || null };
+    }
+
+    var text = await response.text();
+    bytesReceived = utf8Bytes(text || '');
+    var fallbackTotal = totalBytes || bytesReceived;
+    cpUpdateRecentProgress(cpRecentTransferPatch('rendering', startedAt, bytesReceived, fallbackTotal, { status: response.status, percent: fallbackTotal ? 100 : null, etaMs: 0, message: '正在解析并渲染最近消息…' }));
+    return { body: text, bytesReceived: bytesReceived, totalBytes: fallbackTotal || null };
+  }
+
+  async function handleRecentChatsFetch(rawFetch, input, init, url, method) {
+    if (!rawFetch || !url || method !== 'POST') return null;
+    var startedAt = state.recentChatsLoad && state.recentChatsLoad.active && state.recentChatsLoad.startedAt ? state.recentChatsLoad.startedAt : Date.now();
+    cpUpdateRecentProgress({ active: true, phase: 'requesting', startedAt: startedAt, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, status: null, error: null, message: '等待 /recent 返回最近消息…' });
+    remember('recent.fetch.start', { path: url.pathname });
+    try {
+      var response = await rawFetch(input, init);
+      var read = await cpReadRecentResponseWithProgress(response, startedAt);
+      remember('recent.fetch.response', { path: url.pathname, status: response.status, bytesReceived: read.bytesReceived, totalBytes: read.totalBytes, durationMs: Date.now() - startedAt });
+      return new Response(read.body, { status: response.status, statusText: response.statusText || 'OK', headers: cpHeadersFromResponse(response) });
+    } catch (error) {
+      cpFailRecentChatsProgress(error);
+      remember('recent.fetch.error', { path: url.pathname, error: String(error && error.message || error), durationMs: Date.now() - startedAt });
+      throw error;
+    }
+  }
+
   async function callFast(rawFetch, input, init, route, url, method) {
     var startedAt = Date.now();
     var isCharactersAll = url && url.pathname === '/api/characters/all';
@@ -1847,6 +2079,10 @@ ${fastRoutes}
       if (url && url.origin === location.origin && (url.pathname === CHAT_SAVE.originalGetPath || url.pathname === CHAT_SAVE.originalGroupGetPath) && method === CHAT_SAVE.method) {
         var chatGetResponse = await handleChatGetFetch(rawFetch, input, init, url, method);
         if (chatGetResponse) return chatGetResponse;
+      }
+      if (url && url.origin === location.origin && url.pathname === '/api/chats/recent' && method === 'POST') {
+        var recentChatsResponse = await handleRecentChatsFetch(rawFetch, input, init, url, method);
+        if (recentChatsResponse) return recentChatsResponse;
       }
       if (url && url.origin === location.origin && url.pathname === '/api/extensions/discover' && method === 'GET') {
         var extensionResponse = await consumePrefetchRecord(extensionDiscoverPrefetch, 'extensions.discover', Date.now());
