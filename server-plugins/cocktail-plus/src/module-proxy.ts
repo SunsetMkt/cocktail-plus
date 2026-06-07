@@ -325,7 +325,7 @@ function patchWelcomeScreenJs(source) {
             `${indent}    globalThis.__cocktailPlusEarlyBridge?.markStartup?.('welcome.recent-before');`,
             `${indent}    await sendWelcomePanel(recentChats, expand);`,
             `${indent}    globalThis.__cocktailPlusEarlyBridge?.markStartup?.('welcome.recent-after');`,
-            `${indent}    globalThis.__cocktailPlusEarlyBridge?.finishRecentChatsProgress?.('rendered', 600);`,
+            `${indent}    globalThis.__cocktailPlusEarlyBridge?.finishRecentChatsProgress?.('rendered');`,
             `${indent}}).catch(error => {`,
             `${indent}    globalThis.__cocktailPlusEarlyBridge?.failRecentChatsProgress?.(error);`,
             `${indent}    console.error('Welcome recent chats error:', error);`,

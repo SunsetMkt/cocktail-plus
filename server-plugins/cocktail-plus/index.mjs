@@ -2295,7 +2295,9 @@ ${fastRoutes}
     var message = reason === 'cancelled' ? '\u6700\u8FD1\u6D88\u606F\u52A0\u8F7D\u5DF2\u53D6\u6D88' : '\u6700\u8FD1\u6D88\u606F\u5DF2\u663E\u793A';
     cpUpdateRecentProgress({ phase: phase, message: message, percent: 100, etaMs: 0, error: null });
     if (recentProgressRemoveTimer) { clearTimeout(recentProgressRemoveTimer); recentProgressRemoveTimer = null; }
-    recentProgressRemoveTimer = setTimeout(cpRemoveRecentProgress, Math.max(0, delayMs === undefined ? 600 : delayMs));
+    var removeDelayMs = Math.max(0, delayMs === undefined ? 0 : delayMs);
+    if (removeDelayMs <= 0) { cpRemoveRecentProgress(); return; }
+    recentProgressRemoveTimer = setTimeout(cpRemoveRecentProgress, removeDelayMs);
   }
 
   function cpFailRecentChatsProgress(error, delayMs) {
@@ -4969,7 +4971,7 @@ function patchWelcomeScreenJs(source) {
       `${indent}    globalThis.__cocktailPlusEarlyBridge?.markStartup?.('welcome.recent-before');`,
       `${indent}    await sendWelcomePanel(recentChats, expand);`,
       `${indent}    globalThis.__cocktailPlusEarlyBridge?.markStartup?.('welcome.recent-after');`,
-      `${indent}    globalThis.__cocktailPlusEarlyBridge?.finishRecentChatsProgress?.('rendered', 600);`,
+      `${indent}    globalThis.__cocktailPlusEarlyBridge?.finishRecentChatsProgress?.('rendered');`,
       `${indent}}).catch(error => {`,
       `${indent}    globalThis.__cocktailPlusEarlyBridge?.failRecentChatsProgress?.(error);`,
       `${indent}    console.error('Welcome recent chats error:', error);`,

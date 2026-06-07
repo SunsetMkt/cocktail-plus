@@ -677,7 +677,9 @@ ${fastRoutes}
     var message = reason === 'cancelled' ? '最近消息加载已取消' : '最近消息已显示';
     cpUpdateRecentProgress({ phase: phase, message: message, percent: 100, etaMs: 0, error: null });
     if (recentProgressRemoveTimer) { clearTimeout(recentProgressRemoveTimer); recentProgressRemoveTimer = null; }
-    recentProgressRemoveTimer = setTimeout(cpRemoveRecentProgress, Math.max(0, delayMs === undefined ? 600 : delayMs));
+    var removeDelayMs = Math.max(0, delayMs === undefined ? 0 : delayMs);
+    if (removeDelayMs <= 0) { cpRemoveRecentProgress(); return; }
+    recentProgressRemoveTimer = setTimeout(cpRemoveRecentProgress, removeDelayMs);
   }
 
   function cpFailRecentChatsProgress(error, delayMs) {
