@@ -1,28 +1,39 @@
 // server-plugins/cocktail-plus/src/cache-store.ts
-import fs7 from "node:fs";
-import path8 from "node:path";
+import fs8 from "node:fs";
+import path7 from "node:path";
 
 // server-plugins/cocktail-plus/src/constants.ts
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 var PLUGIN_ID = "cocktail-plus";
 var PLUGIN_NAME = "cocktail-plus";
-var VERSION = "0.1.0";
 var API_PREFIX = `/api/plugins/${PLUGIN_ID}`;
 var HEADER_PREFIX = "x-cocktail-plus";
 var SW_MESSAGE_SOURCE = `${PLUGIN_ID}-sw`;
 var PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 var CONFIG_PATH = path.join(PLUGIN_DIR, "config.json");
 var SERVER_ROOT = path.resolve(PLUGIN_DIR, "..", "..");
+function readVersion() {
+  try {
+    const raw = fs.readFileSync(path.join(PLUGIN_DIR, "version.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    const version = String(parsed?.version || "").trim();
+    if (version) return version;
+  } catch {
+  }
+  return "0.1.1";
+}
+var VERSION = readVersion();
 var info = {
   id: PLUGIN_ID,
   name: PLUGIN_NAME,
+  version: VERSION,
   description: "Optional SillyTavern cocktail-plus plugin for frontend/backend startup and interaction paths."
 };
 
 // server-plugins/cocktail-plus/src/config.ts
-import fs from "node:fs";
-import path2 from "node:path";
+import fs2 from "node:fs";
 var DEFAULT_CONFIG = Object.freeze({
   enabled: true,
   serviceWorkerEnabled: true,
@@ -144,19 +155,12 @@ function normalizeConfig(input = {}) {
 }
 function loadConfig() {
   try {
-    if (!fs.existsSync(CONFIG_PATH)) return normalizeConfig({});
-    return normalizeConfig(JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
+    if (!fs2.existsSync(CONFIG_PATH)) return normalizeConfig({});
+    return normalizeConfig(JSON.parse(fs2.readFileSync(CONFIG_PATH, "utf8")));
   } catch (error) {
     console.warn(`[${PLUGIN_ID}] Failed to read config.json, using defaults:`, error);
     return normalizeConfig({});
   }
-}
-function saveConfig(nextConfig) {
-  const normalized = normalizeConfig(nextConfig);
-  fs.mkdirSync(path2.dirname(CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(normalized, null, 4), "utf8");
-  config = normalized;
-  return config;
 }
 function asBoolean(value, fallback = false) {
   return asBool(value, fallback);
@@ -164,8 +168,8 @@ function asBoolean(value, fallback = false) {
 var config = loadConfig();
 
 // server-plugins/cocktail-plus/src/utils.ts
-import fs2 from "node:fs";
-import path3 from "node:path";
+import fs3 from "node:fs";
+import path2 from "node:path";
 import crypto from "node:crypto";
 function sha256(input) {
   return crypto.createHash("sha256").update(String(input)).digest("hex");
@@ -183,7 +187,7 @@ function getDataRoot() {
 }
 function safeStatRecord(filePath, label = filePath) {
   try {
-    const stat = fs2.statSync(filePath);
+    const stat = fs3.statSync(filePath);
     return { label, exists: true, file: stat.isFile(), directory: stat.isDirectory(), size: stat.size, mtimeMs: Math.round(stat.mtimeMs) };
   } catch {
     return { label, exists: false };
@@ -194,12 +198,12 @@ function scanDirectoryShallow(dirPath, options = {}) {
   if (!dirPath) return out;
   const exts = Array.isArray(options.extensions) ? options.extensions.map((x) => String(x).toLowerCase()) : null;
   try {
-    const entries = fs2.readdirSync(dirPath, { withFileTypes: true });
+    const entries = fs3.readdirSync(dirPath, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
-      const ext = path3.extname(entry.name).toLowerCase();
+      const ext = path2.extname(entry.name).toLowerCase();
       if (entry.isFile() && exts && !exts.includes(ext)) continue;
-      out.push(safeStatRecord(path3.join(dirPath, entry.name), `${options.label || dirPath}/${entry.name}`));
+      out.push(safeStatRecord(path2.join(dirPath, entry.name), `${options.label || dirPath}/${entry.name}`));
     }
   } catch {
     out.push({ label: options.label || dirPath, exists: false });
@@ -211,14 +215,14 @@ function signatureFromRecords(records) {
 }
 function readTextIfExists(filePath) {
   try {
-    if (!fs2.existsSync(filePath)) return "";
-    return fs2.readFileSync(filePath, "utf8").trim();
+    if (!fs3.existsSync(filePath)) return "";
+    return fs3.readFileSync(filePath, "utf8").trim();
   } catch {
     return "";
   }
 }
 function getServerRoot() {
-  return fs2.existsSync(path3.join(SERVER_ROOT, "server.js")) ? SERVER_ROOT : process.cwd();
+  return fs3.existsSync(path2.join(SERVER_ROOT, "server.js")) ? SERVER_ROOT : process.cwd();
 }
 function getPathValue(obj, pathValue, fallback = void 0) {
   try {
@@ -309,8 +313,8 @@ var charactersAllEndpoint = {
 };
 
 // server-plugins/cocktail-plus/src/endpoints/chat-save.ts
-import fs3 from "node:fs";
-import path4 from "node:path";
+import fs4 from "node:fs";
+import path3 from "node:path";
 
 // server-plugins/cocktail-plus/src/original-fetch.ts
 function pickResponseHeaders(response) {
@@ -437,18 +441,18 @@ function sanitizeFileName(value) {
   let out = asString(value).replace(/[<>:"/\\|?*\x00-\x1F]/g, "").replace(/[\u{0080}-\u{009F}]/gu, "").trim();
   if (!out || /^\.+$/.test(out)) out = "untitled";
   if (out.length > 240) {
-    const ext = path4.extname(out);
+    const ext = path3.extname(out);
     out = out.slice(0, Math.max(1, 240 - ext.length)) + ext;
   }
   return out;
 }
 function isPathUnderParent(parent, candidate) {
-  const relative = path4.relative(parent, candidate);
-  return !!relative && !relative.startsWith("..") && !path4.isAbsolute(relative);
+  const relative = path3.relative(parent, candidate);
+  return !!relative && !relative.startsWith("..") && !path3.isAbsolute(relative);
 }
 function getSafeStat(filePath) {
   try {
-    const stat = fs3.statSync(filePath);
+    const stat = fs4.statSync(filePath);
     return { exists: true, size: stat.size, mtimeMs: Math.round(stat.mtimeMs), file: stat.isFile() };
   } catch {
     return { exists: false, size: 0, mtimeMs: 0, file: false };
@@ -473,8 +477,8 @@ function parseJsonl(text) {
 }
 function readChatFromFile(filePath) {
   try {
-    if (!fs3.existsSync(filePath)) return [];
-    return parseJsonl(fs3.readFileSync(filePath, "utf8"));
+    if (!fs4.existsSync(filePath)) return [];
+    return parseJsonl(fs4.readFileSync(filePath, "utf8"));
   } catch {
     return [];
   }
@@ -511,7 +515,7 @@ function makeDescriptor(req, endpoint, body) {
     if (!id) throw new Error("group chat id is required");
     const root = req?.user?.directories?.groupChats;
     if (!root) throw new Error("User group chats directory is unavailable");
-    const filePath2 = path4.join(root, sanitizeFileName(`${id}.jsonl`));
+    const filePath2 = path3.join(root, sanitizeFileName(`${id}.jsonl`));
     if (!isPathUnderParent(root, filePath2)) throw new Error("Resolved group chat path is outside user directory");
     return {
       kind,
@@ -530,8 +534,8 @@ function makeDescriptor(req, endpoint, body) {
   const chatsRoot = req?.user?.directories?.chats;
   if (!chatsRoot) throw new Error("User chats directory is unavailable");
   const cardName = avatarUrl.replace(/\.png$/i, "");
-  const directoryPath = path4.join(chatsRoot, cardName);
-  const filePath = path4.join(directoryPath, sanitizeFileName(`${fileName}.jsonl`));
+  const directoryPath = path3.join(chatsRoot, cardName);
+  const filePath = path3.join(directoryPath, sanitizeFileName(`${fileName}.jsonl`));
   if (!isPathUnderParent(chatsRoot, filePath)) throw new Error("Resolved chat path is outside user directory");
   return {
     kind,
@@ -757,8 +761,8 @@ async function handleChatSaveFast(req, res, endpoint = chatSaveEndpoint) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/settings-get.ts
-import fs4 from "node:fs";
-import path5 from "node:path";
+import fs5 from "node:fs";
+import path4 from "node:path";
 var SETTINGS_FILE = "settings.json";
 var JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 var settingsGetEndpoint = {
@@ -788,19 +792,19 @@ function nowIso2() {
 function settingsPathFromRequest(req) {
   const root = req?.user?.directories?.root;
   if (!root) throw new Error("User settings root directory is unavailable");
-  return path5.join(root, SETTINGS_FILE);
+  return path4.join(root, SETTINGS_FILE);
 }
 async function listFiles(directoryPath, fileExtension = ".json") {
   try {
-    const files = await fs4.promises.readdir(directoryPath);
-    return files.filter((name) => path5.extname(name).toLowerCase() === fileExtension).sort((a, b) => a.localeCompare(b));
+    const files = await fs5.promises.readdir(directoryPath);
+    return files.filter((name) => path4.extname(name).toLowerCase() === fileExtension).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
 }
 async function safeStatRecordAsync(filePath, label = filePath) {
   try {
-    const stat = await fs4.promises.stat(filePath);
+    const stat = await fs5.promises.stat(filePath);
     return { label, exists: true, file: stat.isFile(), directory: stat.isDirectory(), size: stat.size, mtimeMs: Math.round(stat.mtimeMs) };
   } catch {
     return { label, exists: false };
@@ -808,13 +812,13 @@ async function safeStatRecordAsync(filePath, label = filePath) {
 }
 async function safeDirectoryRecords(dirPath, label, extensions = null) {
   try {
-    const names = (await fs4.promises.readdir(dirPath)).sort((a, b) => a.localeCompare(b));
+    const names = (await fs5.promises.readdir(dirPath)).sort((a, b) => a.localeCompare(b));
     const filtered = names.filter((name) => {
       if (name.startsWith(".")) return false;
-      const ext = path5.extname(name).toLowerCase();
+      const ext = path4.extname(name).toLowerCase();
       return !extensions || extensions.includes(ext);
     });
-    return await Promise.all(filtered.map((name) => safeStatRecordAsync(path5.join(dirPath, name), `${label}/${name}`)));
+    return await Promise.all(filtered.map((name) => safeStatRecordAsync(path4.join(dirPath, name), `${label}/${name}`)));
   } catch {
     return [{ label, exists: false }];
   }
@@ -847,8 +851,8 @@ async function readPresetsFromDirectory(directoryPath, options = {}) {
   const files = await listFiles(directoryPath, fileExtension);
   const rows = await Promise.all(files.map(async (fileName) => {
     try {
-      const filePath = path5.join(directoryPath, fileName);
-      const text = await fs4.promises.readFile(filePath, "utf8");
+      const filePath = path4.join(directoryPath, fileName);
+      const text = await fs5.promises.readFile(filePath, "utf8");
       if (fileExtension === ".json") JSON.parse(text);
       return {
         name: removeFileExtension ? fileName.replace(/\.[^/.]+$/, "") : fileName,
@@ -869,8 +873,8 @@ async function readAndParseFromDirectory(directoryPath, fileExtension = ".json")
   const files = await listFiles(directoryPath, fileExtension);
   const rows = await Promise.all(files.map(async (fileName) => {
     try {
-      const filePath = path5.join(directoryPath, fileName);
-      const text = await fs4.promises.readFile(filePath, "utf8");
+      const filePath = path4.join(directoryPath, fileName);
+      const text = await fs5.promises.readFile(filePath, "utf8");
       return fileExtension === ".json" ? JSON.parse(text) : text;
     } catch {
       return null;
@@ -880,7 +884,7 @@ async function readAndParseFromDirectory(directoryPath, fileExtension = ".json")
 }
 async function readWorldNames(directoryPath) {
   const files = await listFiles(directoryPath, ".json");
-  return files.map((item) => path5.parse(item).name);
+  return files.map((item) => path4.parse(item).name);
 }
 async function buildSettingsGetPayload(req) {
   const directories = req.user?.directories || {};
@@ -900,7 +904,7 @@ async function buildSettingsGetPayload(req) {
     sysprompt,
     reasoning
   ] = await Promise.all([
-    fs4.promises.readFile(settingsPathFromRequest(req), "utf8"),
+    fs5.promises.readFile(settingsPathFromRequest(req), "utf8"),
     readPresetsFromDirectory(directories.koboldAI_Settings, { removeFileExtension: true }),
     readPresetsFromDirectory(directories.novelAI_Settings, { removeFileExtension: true }),
     readPresetsFromDirectory(directories.openAI_Settings, { removeFileExtension: true }),
@@ -1029,8 +1033,8 @@ async function handleSettingsGetFast(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/settings-save.ts
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path5 from "node:path";
 var SETTINGS_FILE2 = "settings.json";
 var SETTINGS_HASH_ALGORITHM = "cp-stable-sha256-v1";
 var settingsSaveEndpoint = {
@@ -1065,11 +1069,11 @@ function hashSettings(value) {
 function settingsPathFromRequest2(req) {
   const root = req?.user?.directories?.root;
   if (!root) throw new Error("User settings root directory is unavailable");
-  return path6.join(root, SETTINGS_FILE2);
+  return path5.join(root, SETTINGS_FILE2);
 }
 function readCurrentSettings(req) {
   const settingsPath = settingsPathFromRequest2(req);
-  const text = fs5.readFileSync(settingsPath, "utf8");
+  const text = fs6.readFileSync(settingsPath, "utf8");
   return { settingsPath, text, settings: JSON.parse(text) };
 }
 function cloneJson2(value) {
@@ -1253,22 +1257,22 @@ async function handleSettingsSaveFast(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/version.ts
-import fs6 from "node:fs";
-import path7 from "node:path";
+import fs7 from "node:fs";
+import path6 from "node:path";
 function getGitHeadInfo(serverRoot = getServerRoot()) {
-  const gitDir = path7.join(serverRoot, ".git");
-  const headPath = path7.join(gitDir, "HEAD");
+  const gitDir = path6.join(serverRoot, ".git");
+  const headPath = path6.join(gitDir, "HEAD");
   const head = readTextIfExists(headPath);
   let branch = null;
   let revision = null;
   let refPath = null;
   if (head.startsWith("ref:")) {
     const ref = head.slice(4).trim();
-    branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : path7.basename(ref);
-    refPath = path7.join(gitDir, ...ref.split("/"));
+    branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : path6.basename(ref);
+    refPath = path6.join(gitDir, ...ref.split("/"));
     revision = readTextIfExists(refPath) || null;
     if (!revision) {
-      const packedRefs = readTextIfExists(path7.join(gitDir, "packed-refs"));
+      const packedRefs = readTextIfExists(path6.join(gitDir, "packed-refs"));
       const line = packedRefs.split(/\r?\n/g).find((x) => x && !x.startsWith("#") && x.endsWith(` ${ref}`));
       revision = line ? line.split(" ")[0] : null;
     }
@@ -1280,9 +1284,9 @@ function getGitHeadInfo(serverRoot = getServerRoot()) {
 function getVersionSignature(ctx) {
   const serverRoot = getServerRoot();
   const git = getGitHeadInfo(serverRoot);
-  const records = [safeStatRecord(path7.join(serverRoot, "package.json"), "package.json"), safeStatRecord(git.headPath, ".git/HEAD")];
+  const records = [safeStatRecord(path6.join(serverRoot, "package.json"), "package.json"), safeStatRecord(git.headPath, ".git/HEAD")];
   if (git.refPath) records.push(safeStatRecord(git.refPath, `.git/refs/heads/${git.branch}`));
-  records.push(safeStatRecord(path7.join(git.gitDir, "packed-refs"), ".git/packed-refs"));
+  records.push(safeStatRecord(path6.join(git.gitDir, "packed-refs"), ".git/packed-refs"));
   records.push({ label: "head", value: git.head });
   records.push({ label: "revision", value: git.revision || "" });
   return signatureFromRecords(records);
@@ -1291,7 +1295,7 @@ function buildFastVersionObject(ctx) {
   const serverRoot = getServerRoot();
   let pkgVersion = "UNKNOWN";
   try {
-    const pkg = JSON.parse(fs6.readFileSync(path7.join(serverRoot, "package.json"), "utf8"));
+    const pkg = JSON.parse(fs7.readFileSync(path6.join(serverRoot, "package.json"), "utf8"));
     pkgVersion = String(pkg.version || "UNKNOWN");
   } catch {
   }
@@ -1389,14 +1393,14 @@ function nextRequestId(endpointKey = "request") {
 var memoryCache = /* @__PURE__ */ new Map();
 var inflight = /* @__PURE__ */ new Map();
 function getDiskRoot() {
-  return path8.join(PLUGIN_DIR, "cache");
+  return path7.join(PLUGIN_DIR, "cache");
 }
 function getCacheKey2(ctx, endpointKey) {
   return `${ctx.userKey}:${endpointKey}:${sha256(ctx.bodyText).slice(0, 32)}`;
 }
 function getDiskCachePath(ctx, endpointKey) {
   const bodyHash = sha256(ctx.bodyText).slice(0, 32);
-  return path8.join(getDiskRoot(), ctx.userKey, `${endpointKey}-${bodyHash}.json`);
+  return path7.join(getDiskRoot(), ctx.userKey, `${endpointKey}-${bodyHash}.json`);
 }
 function shouldUseDiskCache(endpointKey) {
   const endpoint = ENDPOINTS[endpointKey];
@@ -1407,8 +1411,8 @@ function readDiskEntry(ctx, endpointKey) {
   if (!shouldUseDiskCache(endpointKey)) return null;
   try {
     const file = getDiskCachePath(ctx, endpointKey);
-    if (!fs7.existsSync(file)) return null;
-    const entry = JSON.parse(fs7.readFileSync(file, "utf8"));
+    if (!fs8.existsSync(file)) return null;
+    const entry = JSON.parse(fs8.readFileSync(file, "utf8"));
     if (!entry || typeof entry.bodyText !== "string") return null;
     return entry;
   } catch {
@@ -1419,16 +1423,16 @@ function writeDiskEntry(ctx, endpointKey, entry) {
   if (!shouldUseDiskCache(endpointKey)) return;
   try {
     const file = getDiskCachePath(ctx, endpointKey);
-    fs7.mkdirSync(path8.dirname(file), { recursive: true });
-    fs7.writeFileSync(file, JSON.stringify(entry), "utf8");
+    fs8.mkdirSync(path7.dirname(file), { recursive: true });
+    fs8.writeFileSync(file, JSON.stringify(entry), "utf8");
   } catch {
   }
 }
 function listDiskEntriesForUser(ctx) {
-  const dir = path8.join(getDiskRoot(), ctx.userKey);
+  const dir = path7.join(getDiskRoot(), ctx.userKey);
   try {
-    if (!fs7.existsSync(dir)) return [];
-    return fs7.readdirSync(dir).filter((name) => name.endsWith(".json")).map((name) => path8.join(dir, name));
+    if (!fs8.existsSync(dir)) return [];
+    return fs8.readdirSync(dir).filter((name) => name.endsWith(".json")).map((name) => path7.join(dir, name));
   } catch {
     return [];
   }
@@ -1477,10 +1481,10 @@ function invalidateForUser(ctx, endpointKeys) {
     }
   }
   for (const file of listDiskEntriesForUser(ctx)) {
-    const base = path8.basename(file);
+    const base = path7.basename(file);
     if (endpointKeys.some((endpointKey) => base.startsWith(`${endpointKey}-`))) {
       try {
-        fs7.rmSync(file, { force: true });
+        fs8.rmSync(file, { force: true });
         removed++;
       } catch {
       }
@@ -1495,14 +1499,14 @@ function clearCacheStores() {
 }
 
 // server-plugins/cocktail-plus/src/early-bridge.ts
-import fs8 from "node:fs";
-import path9 from "node:path";
+import fs9 from "node:fs";
+import path8 from "node:path";
 var MARKER_START = "<!-- cocktail-plus early bridge start -->";
 var MARKER_END = "<!-- cocktail-plus early bridge end -->";
 var BRIDGE_SCRIPT_ID = "cocktail-plus-early-bridge";
 var BRIDGE_SRC = `${API_PREFIX}/early/bridge.js`;
-var INDEX_PATH = path9.join(SERVER_ROOT, "public", "index.html");
-var BACKUP_DIR = path9.join(PLUGIN_DIR, "backups");
+var INDEX_PATH = path8.join(SERVER_ROOT, "public", "index.html");
+var BACKUP_DIR = path8.join(PLUGIN_DIR, "backups");
 var MODULE_IMPORT_MAP_ID = "cocktail-plus-module-import-map";
 var MODULE_PROXY_ENTRY_PATHS = ["/scripts/i18n.js", "/script.js"];
 var MODULE_PROXY_IMPORT_PATHS = ["/script.js", "/scripts/i18n.js", "/scripts/system-messages.js", "/scripts/extensions.js", "/scripts/welcome-screen.js"];
@@ -1563,8 +1567,8 @@ function replaceScriptSrcAttribute(tag, nextSrc) {
   return tag;
 }
 function readIndexHtml() {
-  if (!fs8.existsSync(INDEX_PATH)) return "";
-  return fs8.readFileSync(INDEX_PATH, "utf8");
+  if (!fs9.existsSync(INDEX_PATH)) return "";
+  return fs9.readFileSync(INDEX_PATH, "utf8");
 }
 function countOccurrences(text, needle) {
   if (!needle) return 0;
@@ -1577,9 +1581,9 @@ function escapeRegExp(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function makeBackup(html) {
-  fs8.mkdirSync(BACKUP_DIR, { recursive: true });
-  const file = path9.join(BACKUP_DIR, `index.html.${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.bak`);
-  fs8.writeFileSync(file, html, "utf8");
+  fs9.mkdirSync(BACKUP_DIR, { recursive: true });
+  const file = path8.join(BACKUP_DIR, `index.html.${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.bak`);
+  fs9.writeFileSync(file, html, "utf8");
   return file;
 }
 function rewriteIndexModuleProxyTags(html) {
@@ -1657,7 +1661,7 @@ function installEarlyBridge(options = {}) {
   }
   let backup = null;
   if (!options.noBackup) backup = makeBackup(html);
-  fs8.writeFileSync(INDEX_PATH, finalHtml, "utf8");
+  fs9.writeFileSync(INDEX_PATH, finalHtml, "utf8");
   return { ok: true, changed: true, mode, backup, status: getEarlyBridgeStatus() };
 }
 function uninstallEarlyBridge(options = {}) {
@@ -1672,7 +1676,7 @@ function uninstallEarlyBridge(options = {}) {
   const nextHtml = restoreIndexModuleProxyTags(html.replace(markerRegex, "").replace(/\n{3,}/g, "\n\n"));
   let backup = null;
   if (!options.noBackup) backup = makeBackup(html);
-  fs8.writeFileSync(INDEX_PATH, nextHtml, "utf8");
+  fs9.writeFileSync(INDEX_PATH, nextHtml, "utf8");
   return { ok: true, changed: true, backup, status: getEarlyBridgeStatus() };
 }
 function makeFastRoutesLiteral() {
@@ -1681,8 +1685,8 @@ function makeFastRoutesLiteral() {
 function makeTemplatePreloadList() {
   const fallback = ["help.html", "hotkeys.html", "formatting.html", "welcome.html", "welcomePrompt.html", "assistantNote.html"];
   try {
-    const dir = path9.join(SERVER_ROOT, "public", "scripts", "templates");
-    const names = fs8.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
+    const dir = path8.join(SERVER_ROOT, "public", "scripts", "templates");
+    const names = fs9.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
     const list = names.length ? names : fallback;
     return list.map((name) => `/scripts/templates/${name}`);
   } catch {
@@ -3093,6 +3097,10 @@ function autoEnsureEarlyBridge() {
   }
 }
 
+// server-plugins/cocktail-plus/src/routes.ts
+import fs12 from "node:fs";
+import path11 from "node:path";
+
 // server-plugins/cocktail-plus/src/fast-handler.ts
 function makeEntryFromBody(ctx, endpointKey, status, statusText, headers, bodyText, signature, durationMs, transform = null) {
   const now = Date.now();
@@ -3272,16 +3280,16 @@ async function handleFast(req, res, endpointKey) {
 }
 
 // server-plugins/cocktail-plus/src/service-worker.ts
-import fs9 from "node:fs";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import path9 from "node:path";
 function makeFastRoutesLiteral2() {
   return ENDPOINT_LIST.map((endpoint) => `  [${JSON.stringify(endpoint.originalPath)}, { path: PREFIX + ${JSON.stringify(endpoint.fastPath)}, method: ${JSON.stringify(endpoint.method)} }]`).join(",\n");
 }
 function makeTemplatePreloadList2() {
   const fallback = ["help.html", "hotkeys.html", "formatting.html", "welcome.html", "welcomePrompt.html", "assistantNote.html"];
   try {
-    const dir = path10.join(SERVER_ROOT, "public", "scripts", "templates");
-    const names = fs9.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
+    const dir = path9.join(SERVER_ROOT, "public", "scripts", "templates");
+    const names = fs10.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
     const list = names.length ? names : fallback;
     return list.map((name) => `/scripts/templates/${name}`);
   } catch {
@@ -3911,9 +3919,9 @@ self.addEventListener('fetch', (event) => {
 
 // server-plugins/cocktail-plus/src/module-proxy.ts
 import crypto2 from "node:crypto";
-import fs10 from "node:fs";
-import path11 from "node:path";
-var PUBLIC_ROOT = path11.join(SERVER_ROOT, "public");
+import fs11 from "node:fs";
+import path10 from "node:path";
+var PUBLIC_ROOT = path10.join(SERVER_ROOT, "public");
 var TARGET_PROXY_MODULE_PATHS = /* @__PURE__ */ new Set(["/script.js", "/scripts/i18n.js", "/scripts/system-messages.js", "/scripts/extensions.js", "/scripts/welcome-screen.js"]);
 function normalizePublicPath(value) {
   let raw = String(value || "").split("?")[0].split("#")[0];
@@ -3921,8 +3929,8 @@ function normalizePublicPath(value) {
   raw = decodeURIComponent(raw);
   if (!raw.endsWith(".js")) throw new Error("Only JavaScript modules can be proxied");
   if (raw.includes("\0")) throw new Error("Invalid module path");
-  const fullPath = path11.resolve(PUBLIC_ROOT, `.${raw}`);
-  if (!fullPath.startsWith(PUBLIC_ROOT + path11.sep) && fullPath !== PUBLIC_ROOT) {
+  const fullPath = path10.resolve(PUBLIC_ROOT, `.${raw}`);
+  if (!fullPath.startsWith(PUBLIC_ROOT + path10.sep) && fullPath !== PUBLIC_ROOT) {
     throw new Error("Module path escapes public root");
   }
   return { publicPath: raw.replace(/\\/g, "/"), fullPath };
@@ -3936,8 +3944,8 @@ function toProxySpecifier(currentPublicPath, specifier) {
   if (!specifier.startsWith(".") && !specifier.startsWith("/")) return specifier;
   const [withoutHash, hash = ""] = specifier.split("#");
   const [withoutQuery, query = ""] = withoutHash.split("?");
-  const baseDir = path11.posix.dirname(currentPublicPath);
-  const resolved = specifier.startsWith("/") ? path11.posix.normalize(withoutQuery) : path11.posix.normalize(path11.posix.join(baseDir, withoutQuery));
+  const baseDir = path10.posix.dirname(currentPublicPath);
+  const resolved = specifier.startsWith("/") ? path10.posix.normalize(withoutQuery) : path10.posix.normalize(path10.posix.join(baseDir, withoutQuery));
   const normalized = resolved.startsWith("/") ? resolved : `/${resolved}`;
   const suffix = `${query ? `?${query}` : ""}${hash ? `#${hash}` : ""}`;
   if (normalized === "/lib.js" || normalized.startsWith("/lib/")) {
@@ -4275,7 +4283,7 @@ function makeEtag(source) {
 async function handleModuleProxy(req, res) {
   try {
     const { publicPath, fullPath } = normalizePublicPath(req.query?.path || req.path || "");
-    let source = await fs10.promises.readFile(fullPath, "utf8");
+    let source = await fs11.promises.readFile(fullPath, "utf8");
     source = applyTargetedPatches(source, publicPath);
     source = rewriteModuleSpecifiers(source, publicPath);
     source += `
@@ -4294,138 +4302,6 @@ async function handleModuleProxy(req, res) {
     res.send(source);
   } catch (error) {
     res.status(404).type("text/plain").send(error instanceof Error ? error.message : String(error));
-  }
-}
-
-// server-plugins/cocktail-plus/src/self-install.ts
-import fs11 from "node:fs";
-import path12 from "node:path";
-function safeStat(filePath) {
-  try {
-    return fs11.statSync(filePath);
-  } catch {
-    return null;
-  }
-}
-function isDirectoryWithIndex(filePath) {
-  const stat = safeStat(filePath);
-  return !!stat?.isDirectory?.() && fs11.existsSync(path12.join(filePath, "index.mjs"));
-}
-function samePath(a, b) {
-  try {
-    return path12.resolve(a) === path12.resolve(b);
-  } catch {
-    return String(a) === String(b);
-  }
-}
-function uniquePush(list, value) {
-  if (!value) return;
-  const full = path12.resolve(value);
-  if (!list.some((item) => samePath(item, full))) list.push(full);
-}
-function getCandidateFrontendBackendPaths() {
-  const candidates = [];
-  uniquePush(candidates, path12.join(SERVER_ROOT, "public", "scripts", "extensions", "third-party", PLUGIN_ID, "server-plugins", PLUGIN_ID));
-  const dataRoot = getDataRoot();
-  uniquePush(candidates, path12.join(dataRoot, "default-user", "extensions", PLUGIN_ID, "server-plugins", PLUGIN_ID));
-  try {
-    if (fs11.existsSync(dataRoot) && fs11.statSync(dataRoot).isDirectory()) {
-      for (const entry of fs11.readdirSync(dataRoot, { withFileTypes: true })) {
-        if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-        uniquePush(candidates, path12.join(dataRoot, entry.name, "extensions", PLUGIN_ID, "server-plugins", PLUGIN_ID));
-      }
-    }
-  } catch {
-  }
-  return candidates;
-}
-function getSelfInstallStatus() {
-  const candidates = getCandidateFrontendBackendPaths();
-  const sourcePath = candidates.find(isDirectoryWithIndex) || null;
-  return {
-    ok: true,
-    pluginDir: PLUGIN_DIR,
-    serverRoot: SERVER_ROOT,
-    dataRoot: getDataRoot(),
-    sourcePath,
-    candidates: candidates.map((candidate) => ({
-      path: candidate,
-      exists: !!safeStat(candidate),
-      usable: isDirectoryWithIndex(candidate)
-    }))
-  };
-}
-function copyRecursive(source, target) {
-  fs11.cpSync(source, target, {
-    recursive: true,
-    force: true,
-    errorOnExist: false,
-    dereference: false,
-    filter: (src) => {
-      const base = path12.basename(src);
-      if (base === "node_modules" || base === ".git" || base === ".deploy-backups") return false;
-      return true;
-    }
-  });
-}
-function preserveExistingRuntimeFiles(targetDir, tempDir) {
-  const preserveItems = ["config.json", "cache"];
-  for (const item of preserveItems) {
-    const src = path12.join(targetDir, item);
-    if (!fs11.existsSync(src)) continue;
-    const dst = path12.join(tempDir, item);
-    try {
-      fs11.cpSync(src, dst, { recursive: true, force: true, errorOnExist: false });
-    } catch {
-    }
-  }
-}
-function installBackendFromFrontend(options = {}) {
-  const noBackup = !!options.noBackup;
-  const status = getSelfInstallStatus();
-  const sourcePath = status.sourcePath;
-  if (!sourcePath) {
-    return { ok: false, error: "Frontend bundled backend plugin not found.", status };
-  }
-  if (samePath(sourcePath, PLUGIN_DIR)) {
-    return { ok: true, changed: false, reason: "source-is-current-plugin-dir", sourcePath, targetPath: PLUGIN_DIR, status };
-  }
-  const pluginsRoot = path12.dirname(PLUGIN_DIR);
-  fs11.mkdirSync(pluginsRoot, { recursive: true });
-  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-  const tempDir = path12.join(pluginsRoot, `.${PLUGIN_ID}-update-tmp-${stamp}`);
-  const backupRoot = path12.join(pluginsRoot, ".cocktail-plus-backups");
-  const backupDir = path12.join(backupRoot, `${PLUGIN_ID}-${stamp}`);
-  try {
-    if (fs11.existsSync(tempDir)) fs11.rmSync(tempDir, { recursive: true, force: true });
-    copyRecursive(sourcePath, tempDir);
-    preserveExistingRuntimeFiles(PLUGIN_DIR, tempDir);
-    let backup = null;
-    if (fs11.existsSync(PLUGIN_DIR)) {
-      if (noBackup) {
-        fs11.rmSync(PLUGIN_DIR, { recursive: true, force: true });
-      } else {
-        fs11.mkdirSync(backupRoot, { recursive: true });
-        fs11.renameSync(PLUGIN_DIR, backupDir);
-        backup = backupDir;
-      }
-    }
-    fs11.renameSync(tempDir, PLUGIN_DIR);
-    return {
-      ok: true,
-      changed: true,
-      sourcePath,
-      targetPath: PLUGIN_DIR,
-      backup,
-      restartRequired: true,
-      status: getSelfInstallStatus()
-    };
-  } catch (error) {
-    try {
-      if (fs11.existsSync(tempDir)) fs11.rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-    }
-    return { ok: false, error: error instanceof Error ? error.message : String(error), sourcePath, targetPath: PLUGIN_DIR, status };
   }
 }
 
@@ -4449,15 +4325,13 @@ function registerRoutes(router) {
       ok: true,
       plugin: info,
       version: VERSION,
-      config,
       serviceWorker: { enabled: !!config.serviceWorkerEnabled, url: `${API_PREFIX}/sw.js`, scope: "/" },
       earlyBridge: getEarlyBridgeStatus(),
       stats,
       status: getUserStatus(ctx),
       settingsSave: getSettingsSaveStatus(),
       chatSave: getChatSaveStatus(),
-      settingsGet: getSettingsGetStatus(),
-      selfInstall: getSelfInstallStatus()
+      settingsGet: getSettingsGetStatus()
     });
   });
   router.get("/sw.js", async (_req, res) => {
@@ -4470,9 +4344,6 @@ function registerRoutes(router) {
     res.setHeader("service-worker-allowed", "/");
     res.send(makeServiceWorkerScript());
   });
-  router.post("/config/get", async (_req, res) => {
-    sendJson3(res, { ok: true, config });
-  });
   router.get("/early/bridge.js", async (_req, res) => {
     if (!config.earlyBridgeEnabled) {
       res.setHeader("content-type", "application/javascript; charset=utf-8");
@@ -4483,6 +4354,20 @@ function registerRoutes(router) {
     res.setHeader("content-type", "application/javascript; charset=utf-8");
     res.setHeader("cache-control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.send(makeEarlyBridgeScript());
+  });
+  router.get("/helper/:file", async (req, res) => {
+    const fileName = String(req.params?.file || "");
+    if (!["cocktail-plus-helper.ps1", "cocktail-plus-helper.sh"].includes(fileName)) {
+      res.status(404).type("text/plain").send("Not found");
+      return;
+    }
+    const filePath = path11.join(PLUGIN_DIR, "scripts", fileName);
+    if (!fs12.existsSync(filePath)) {
+      res.status(404).type("text/plain").send("Helper script not found");
+      return;
+    }
+    res.setHeader("cache-control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.type("text/plain; charset=utf-8").send(fs12.readFileSync(filePath, "utf8"));
   });
   router.get("/module", async (req, res) => handleModuleProxy(req, res));
   router.post("/early/status", async (_req, res) => {
@@ -4497,10 +4382,6 @@ function registerRoutes(router) {
     const noBackup = asBoolean(req.body?.noBackup, false);
     const result = uninstallEarlyBridge({ noBackup });
     sendJson3(res, result);
-  });
-  router.post("/config/set", async (req, res) => {
-    const next = saveConfig({ ...config, ...req.body?.config || req.body || {} });
-    sendJson3(res, { ok: true, config: next });
   });
   registerFastRoutes(router);
   router.post(settingsGetEndpoint.fastPath, async (req, res) => handleSettingsGetFast(req, res));
@@ -4533,14 +4414,7 @@ function registerRoutes(router) {
   });
   router.post("/status", async (req, res) => {
     const ctx = makeRequestContext(req, { bodyOverride: {} });
-    sendJson3(res, { ok: true, config, stats, status: getUserStatus(ctx), earlyBridge: getEarlyBridgeStatus(), settingsSave: getSettingsSaveStatus(), chatSave: getChatSaveStatus(), settingsGet: getSettingsGetStatus(), selfInstall: getSelfInstallStatus() });
-  });
-  router.post("/backend/install-from-frontend", async (req, res) => {
-    const noBackup = asBoolean(req.body?.noBackup, false);
-    sendJson3(res, installBackendFromFrontend({ noBackup }));
-  });
-  router.post("/backend/install-status", async (_req, res) => {
-    sendJson3(res, getSelfInstallStatus());
+    sendJson3(res, { ok: true, stats, status: getUserStatus(ctx), earlyBridge: getEarlyBridgeStatus(), settingsSave: getSettingsSaveStatus(), chatSave: getChatSaveStatus(), settingsGet: getSettingsGetStatus() });
   });
   router.post("/cache/clear", async (req, res) => {
     const endpointKeys = parseEndpointList(req.body?.endpoints, ["characters-all"]);

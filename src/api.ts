@@ -2,7 +2,7 @@ import { API_PREFIX } from './constants';
 import { getRequestHeaders, log } from './st-context';
 import { refreshServiceWorkerState } from './service-worker';
 import { state } from './state';
-import type { BackendConfig, BackendProbe } from './types';
+import type { BackendProbe } from './types';
 
 export async function postJson<T>(url: string, body: unknown = {}): Promise<T> {
   const response = await fetch(url, {
@@ -50,12 +50,6 @@ export async function refreshStatus() {
       log('刷新状态失败', error instanceof Error ? error.message : String(error));
     }
   }
-}
-
-export async function updateBackendConfig(partial: Partial<BackendConfig>) {
-  const result = await postJson<{ ok: boolean; config: BackendConfig }>(`${API_PREFIX}/config/set`, { config: partial });
-  if (state.backend) state.backend.config = result.config;
-  log('后端配置已更新', partial);
 }
 
 export async function refreshEarlyBridgeStatus() {

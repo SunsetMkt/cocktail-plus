@@ -1,4 +1,4 @@
-import { API_PREFIX, EXTENSION_NAME } from './constants';
+import { EXTENSION_NAME } from './constants';
 import { ensureLocalSettings, updateLocalString } from './settings';
 import { state } from './state';
 import { getCtx, getRequestHeaders, log } from './st-context';
@@ -153,21 +153,6 @@ async function updateFrontendViaApi() {
   return await response.json().catch(() => ({}));
 }
 
-async function syncBackendFromUpdatedFrontend() {
-  if (!state.backend?.ok) return { ok: true, skipped: true, reason: 'backend-not-connected' };
-  const response = await fetch(`${API_PREFIX}/backend/install-from-frontend`, {
-    method: 'POST',
-    headers: getRequestHeaders(),
-    body: JSON.stringify({}),
-    cache: 'no-store',
-  });
-  const data = await response.json().catch(async () => ({ ok: false, error: await response.text().catch(() => '') }));
-  if (!response.ok || !data?.ok) {
-    throw new Error(data?.error || response.statusText || String(response.status));
-  }
-  return data;
-}
-
 export async function checkForUpdates(options: { manual?: boolean; prompt?: boolean } = {}) {
   if (state.update.checking) return state.update;
   state.update.checking = true;
@@ -220,7 +205,7 @@ async function promptAndMaybeUpdate(currentVersion: string | null, latestVersion
   const POPUP_RESULT = ctx?.POPUP_RESULT;
   const skipResult = Number(POPUP_RESULT?.CUSTOM1 ?? 1001);
   const title = '鸡尾酒+ 发现新版本';
-  const text = `当前版本：${currentVersion || '-'}\n最新版本：${latestVersion}\n\n是否现在更新？\n如果后端已连接，更新前端后会同步覆盖后端插件，完成后需要重启 SillyTavern。`;
+  const text = `当前版本：${currentVersion || '-'}\n最新版本：${latestVersion}\n\n是否现在更新前端扩展？\n后端扩展是全局服务，如需更新/卸载后端，请使用面板中的后端插件脚本助手。`;
 
   let action: 'update' | 'skip' | 'later' = 'later';
   try {
@@ -252,7 +237,6 @@ export async function performUpdate() {
   if (state.update.checking) return;
   state.update.checking = true;
   state.update.error = null;
-  state.update.backendSync = null;
 
   try {
     toast('info', '开始更新前端扩展…');
@@ -260,17 +244,7 @@ export async function performUpdate() {
     log('frontend update result', frontendResult);
     updateLocalString('skippedUpdateVersion', '');
 
-    let backendResult: unknown = null;
-    try {
-      backendResult = await syncBackendFromUpdatedFrontend();
-      state.update.backendSync = { ok: true, result: backendResult };
-      if ((backendResult as any)?.skipped) toast('info', '前端已更新；后端未连接，跳过后端同步。');
-      else toast('success', '前端已更新，后端插件已同步覆盖。重启 SillyTavern 后后端更新生效。');
-    } catch (backendError) {
-      const message = backendError instanceof Error ? backendError.message : String(backendError);
-      state.update.backendSync = { ok: false, error: message };
-      toast('warning', `前端已更新，但后端同步失败：${message}`);
-    }
+    toast('success', '前端扩展已更新。后端扩展是全局服务，如需更新请使用“后端插件脚本助手”。');
 
     await sleep(800);
     try { globalThis.location?.reload?.(); } catch { /* ignore */ }

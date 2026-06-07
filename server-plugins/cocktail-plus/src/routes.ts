@@ -1,6 +1,8 @@
 // @ts-nocheck
-import { API_PREFIX, HEADER_PREFIX, VERSION, info } from './constants.js';
-import { asBoolean, config, saveConfig } from './config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { API_PREFIX, HEADER_PREFIX, PLUGIN_DIR, VERSION, info } from './constants.js';
+import { asBoolean, config } from './config.js';
 import { ENDPOINT_LIST, parseEndpointList } from './endpoint-registry.js';
 import { handleFast, warmEntry } from './fast-handler.js';
 import { makeRequestContext } from './request-context.js';
@@ -12,7 +14,6 @@ import { chatSaveEndpoint, getChatSaveStatus, groupChatSaveEndpoint, handleChatS
 import { getSettingsSaveStatus, handleSettingsSaveFast, settingsSaveEndpoint } from './endpoints/settings-save.js';
 import { clearSettingsGetCache, getSettingsGetStatus, handleSettingsGetFast, settingsGetEndpoint } from './endpoints/settings-get.js';
 import { handleModuleProxy } from './module-proxy.js';
-import { getSelfInstallStatus, installBackendFromFrontend } from './self-install.js';
 
 function sendJson(res, data) {
     res.setHeader(HEADER_PREFIX, VERSION);
@@ -35,7 +36,6 @@ export function registerRoutes(router) {
             ok: true,
             plugin: info,
             version: VERSION,
-            config,
             serviceWorker: { enabled: !!config.serviceWorkerEnabled, url: `${API_PREFIX}/sw.js`, scope: '/' },
             earlyBridge: getEarlyBridgeStatus(),
             stats,
@@ -43,7 +43,6 @@ export function registerRoutes(router) {
             settingsSave: getSettingsSaveStatus(),
             chatSave: getChatSaveStatus(),
             settingsGet: getSettingsGetStatus(),
-            selfInstall: getSelfInstallStatus(),
         });
     });
 
@@ -57,9 +56,6 @@ export function registerRoutes(router) {
         res.setHeader('service-worker-allowed', '/');
         res.send(makeServiceWorkerScript());
     });
-
-    router.post('/config/get', async (_req, res) => { sendJson(res, { ok: true, config }); });
-
     router.get('/early/bridge.js', async (_req, res) => {
         if (!config.earlyBridgeEnabled) {
             res.setHeader('content-type', 'application/javascript; charset=utf-8');
@@ -70,6 +66,21 @@ export function registerRoutes(router) {
         res.setHeader('content-type', 'application/javascript; charset=utf-8');
         res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res.send(makeEarlyBridgeScript());
+    });
+
+    router.get('/helper/:file', async (req, res) => {
+        const fileName = String(req.params?.file || '');
+        if (!['cocktail-plus-helper.ps1', 'cocktail-plus-helper.sh'].includes(fileName)) {
+            res.status(404).type('text/plain').send('Not found');
+            return;
+        }
+        const filePath = path.join(PLUGIN_DIR, 'scripts', fileName);
+        if (!fs.existsSync(filePath)) {
+            res.status(404).type('text/plain').send('Helper script not found');
+            return;
+        }
+        res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.type('text/plain; charset=utf-8').send(fs.readFileSync(filePath, 'utf8'));
     });
 
     router.get('/module', async (req, res) => handleModuleProxy(req, res));
@@ -88,11 +99,6 @@ export function registerRoutes(router) {
         const noBackup = asBoolean(req.body?.noBackup, false);
         const result = uninstallEarlyBridge({ noBackup });
         sendJson(res, result);
-    });
-
-    router.post('/config/set', async (req, res) => {
-        const next = saveConfig({ ...config, ...(req.body?.config || req.body || {}) });
-        sendJson(res, { ok: true, config: next });
     });
 
     registerFastRoutes(router);
@@ -131,16 +137,7 @@ export function registerRoutes(router) {
 
     router.post('/status', async (req, res) => {
         const ctx = makeRequestContext(req, { bodyOverride: {} });
-        sendJson(res, { ok: true, config, stats, status: getUserStatus(ctx), earlyBridge: getEarlyBridgeStatus(), settingsSave: getSettingsSaveStatus(), chatSave: getChatSaveStatus(), settingsGet: getSettingsGetStatus(), selfInstall: getSelfInstallStatus() });
-    });
-
-    router.post('/backend/install-from-frontend', async (req, res) => {
-        const noBackup = asBoolean(req.body?.noBackup, false);
-        sendJson(res, installBackendFromFrontend({ noBackup }));
-    });
-
-    router.post('/backend/install-status', async (_req, res) => {
-        sendJson(res, getSelfInstallStatus());
+        sendJson(res, { ok: true, stats, status: getUserStatus(ctx), earlyBridge: getEarlyBridgeStatus(), settingsSave: getSettingsSaveStatus(), chatSave: getChatSaveStatus(), settingsGet: getSettingsGetStatus() });
     });
 
     router.post('/cache/clear', async (req, res) => {

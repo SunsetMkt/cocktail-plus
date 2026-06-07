@@ -16,7 +16,6 @@ export const DEFAULT_UPDATE_STATUS: UpdateStatus = {
   updateAvailable: false,
   error: null,
   lastCheckedAt: null,
-  backendSync: null,
 };
 
 export const state: {

@@ -1,48 +1,5 @@
 export type CacheEndpoint = 'characters-all' | 'version';
 
-export type BackendConfig = {
-  enabled: boolean;
-  serviceWorkerEnabled: boolean;
-  cacheCharactersAll: boolean;
-  cacheVersion: boolean;
-  staleWhileRevalidate: boolean;
-  maxStaleMs: number;
-  shallowCharactersAll: boolean;
-  diskCacheCharactersAll: boolean;
-  diskCacheVersion: boolean;
-  fastVersionOnMiss: boolean;
-  asyncCharactersAllOnMiss: boolean;
-  earlyBridgeEnabled: boolean;
-  autoInstallEarlyBridge: boolean;
-  earlyBridgePatchFetch: boolean;
-  optimizeSettingsSave: boolean;
-  settingsSaveNoopEnabled: boolean;
-  settingsSavePatchEnabled: boolean;
-  settingsSaveMaxPatchOperations: number;
-  settingsSaveMaxPatchBytesRatio: number;
-  optimizeChatSave: boolean;
-  chatSaveNoopEnabled: boolean;
-  chatSavePatchEnabled: boolean;
-  chatSaveMaxPatchOperations: number;
-  chatSaveMaxPatchBytesRatio: number;
-  chatSaveCacheMaxEntries: number;
-  optimizeSettingsGet: boolean;
-  cacheSettingsGet: boolean;
-  templatePreloadEnabled: boolean;
-  startupPreloadEnabled: boolean;
-  serviceWorkerFastRouteFallback: boolean;
-  serviceWorkerSettingsGetFallback: boolean;
-  serviceWorkerSettingsSaveFallback: boolean;
-  serviceWorkerChatSaveFallback: boolean;
-  serviceWorkerTemplateFallback: boolean;
-  moduleProxyEnabled: boolean;
-  patchStartupInit: boolean;
-  patchI18nInit: boolean;
-  patchSystemMessagesInit: boolean;
-  patchExtensionManifests: boolean;
-  patchParallelActivateExtensions: boolean;
-};
-
 export type EarlyBridgeStatus = {
   ok: boolean;
   enabled: boolean;
@@ -142,15 +99,6 @@ export type SettingsGetStatus = {
   };
 };
 
-export type SelfInstallStatus = {
-  ok: boolean;
-  pluginDir?: string;
-  serverRoot?: string;
-  dataRoot?: string;
-  sourcePath?: string | null;
-  candidates?: Array<{ path: string; exists: boolean; usable: boolean }>;
-};
-
 export type UpdateStatus = {
   checking: boolean;
   checked: boolean;
@@ -159,13 +107,11 @@ export type UpdateStatus = {
   updateAvailable: boolean;
   error: string | null;
   lastCheckedAt: number | null;
-  backendSync?: { ok: boolean; error?: string | null; result?: unknown } | null;
 };
 
 export type BackendProbe = {
   ok: boolean;
   version?: string;
-  config?: BackendConfig;
   stats?: Record<string, unknown>;
   status?: CacheEntrySummary[];
   settingsGet?: SettingsGetStatus;
@@ -173,7 +119,6 @@ export type BackendProbe = {
   chatSave?: ChatSaveStatus;
   serviceWorker?: { enabled: boolean; url: string; scope: string };
   earlyBridge?: EarlyBridgeStatus;
-  selfInstall?: SelfInstallStatus;
 };
 
 export type LocalSettings = {

@@ -45,8 +45,7 @@ const DEFAULT_UPDATE_STATUS = {
   latestVersion: null,
   updateAvailable: false,
   error: null,
-  lastCheckedAt: null,
-  backendSync: null
+  lastCheckedAt: null
 };
 const state = {
   backend: null,
@@ -144,10 +143,6 @@ async function refreshStatus() {
       log("刷新状态失败", error instanceof Error ? error.message : String(error));
     }
   }
-}
-async function updateBackendConfig(partial) {
-  const result = await postJson(`${API_PREFIX}/config/set`, { config: partial });
-  if (state.backend) state.backend.config = result.config;
 }
 async function refreshEarlyBridgeStatus() {
   const result = await postJson(`${API_PREFIX}/early/status`, {});
@@ -436,21 +431,6 @@ async function updateFrontendViaApi() {
   }
   return await response.json().catch(() => ({}));
 }
-async function syncBackendFromUpdatedFrontend() {
-  var _a;
-  if (!((_a = state.backend) == null ? void 0 : _a.ok)) return { ok: true, skipped: true, reason: "backend-not-connected" };
-  const response = await fetch(`${API_PREFIX}/backend/install-from-frontend`, {
-    method: "POST",
-    headers: getRequestHeaders(),
-    body: JSON.stringify({}),
-    cache: "no-store"
-  });
-  const data = await response.json().catch(async () => ({ ok: false, error: await response.text().catch(() => "") }));
-  if (!response.ok || !(data == null ? void 0 : data.ok)) {
-    throw new Error((data == null ? void 0 : data.error) || response.statusText || String(response.status));
-  }
-  return data;
-}
 async function checkForUpdates(options = {}) {
   if (state.update.checking) return state.update;
   state.update.checking = true;
@@ -502,8 +482,8 @@ async function promptAndMaybeUpdate(currentVersion, latestVersion) {
   const text = `当前版本：${currentVersion || "-"}
 最新版本：${latestVersion}
 
-是否现在更新？
-如果后端已连接，更新前端后会同步覆盖后端插件，完成后需要重启 SillyTavern。`;
+是否现在更新前端扩展？
+后端扩展是全局服务，如需更新/卸载后端，请使用面板中的后端插件脚本助手。`;
   let action = "later";
   try {
     if (((_a = Popup == null ? void 0 : Popup.show) == null ? void 0 : _a.confirm) && POPUP_RESULT) {
@@ -535,23 +515,12 @@ async function performUpdate() {
   if (state.update.checking) return;
   state.update.checking = true;
   state.update.error = null;
-  state.update.backendSync = null;
   try {
     toast("info", "开始更新前端扩展…");
     const frontendResult = await updateFrontendViaApi();
     log("frontend update result", frontendResult);
     updateLocalString("skippedUpdateVersion", "");
-    let backendResult = null;
-    try {
-      backendResult = await syncBackendFromUpdatedFrontend();
-      state.update.backendSync = { ok: true, result: backendResult };
-      if (backendResult == null ? void 0 : backendResult.skipped) toast("info", "前端已更新；后端未连接，跳过后端同步。");
-      else toast("success", "前端已更新，后端插件已同步覆盖。重启 SillyTavern 后后端更新生效。");
-    } catch (backendError) {
-      const message = backendError instanceof Error ? backendError.message : String(backendError);
-      state.update.backendSync = { ok: false, error: message };
-      toast("warning", `前端已更新，但后端同步失败：${message}`);
-    }
+    toast("success", "前端扩展已更新。后端扩展是全局服务，如需更新请使用“后端插件脚本助手”。");
     await sleep(800);
     try {
       (_b = (_a = globalThis.location) == null ? void 0 : _a.reload) == null ? void 0 : _b.call(_a);
@@ -613,14 +582,18 @@ function quotePowerShellSingle(value) {
   return String(value).replace(/'/g, "''");
 }
 function getHelperScriptUrl(fileName) {
+  var _a;
   try {
+    if ((_a = state.backend) == null ? void 0 : _a.ok) {
+      return `${location.origin}/api/plugins/cocktail-plus/helper/${fileName}`;
+    }
     const url = new URL(import.meta.url);
-    url.pathname = url.pathname.replace(/\/dist\/index\.js$/, `/scripts/${fileName}`);
+    url.pathname = url.pathname.replace(/\/dist\/index\.js$/, `/server-plugins/cocktail-plus/scripts/${fileName}`);
     url.search = "";
     url.hash = "";
     return url.href;
   } catch {
-    return `${location.origin}/scripts/extensions/third-party/cocktail-plus/scripts/${fileName}`;
+    return `${location.origin}/scripts/extensions/third-party/cocktail-plus/server-plugins/cocktail-plus/scripts/${fileName}`;
   }
 }
 function getWindowsHelperCommand() {
@@ -635,14 +608,14 @@ function renderHelperSection() {
   return `
     <div class="cp-section">
       <b>后端插件脚本助手</b>
-      <div class="cp-muted">复制对应系统命令到运行 SillyTavern 的机器终端中执行；脚本会优先从进程定位 SillyTavern，失败后扫描/手动选择 <code>config.yaml</code>，并可安装/删除后端插件或开关 <code>enableServerPlugins</code>。</div>
+      <div class="cp-muted">复制对应系统命令到运行 SillyTavern 的机器终端中执行；脚本会优先从进程定位 SillyTavern，失败后扫描/手动选择 <code>config.yaml</code>，并可安装/删除后端插件、维护后端 <code>config.json</code>、开关 <code>enableServerPlugins</code> 或重启酒馆。</div>
       <div class="cp-command-block">
         <div class="cp-command-title">Windows PowerShell</div>
         <textarea id="cp_helper_windows_command" class="cp-command" rows="4" readonly>${escapeHtml(getWindowsHelperCommand())}</textarea>
         <button id="cp_copy_windows_helper" class="menu_button">复制 Windows 命令</button>
       </div>
       <div class="cp-command-block">
-        <div class="cp-command-title">Linux / macOS Bash</div>
+        <div class="cp-command-title">Termux / Linux / macOS Bash</div>
         <textarea id="cp_helper_unix_command" class="cp-command" rows="4" readonly>${escapeHtml(getUnixHelperCommand())}</textarea>
         <button id="cp_copy_unix_helper" class="menu_button">复制 Linux/macOS 命令</button>
       </div>
@@ -650,10 +623,8 @@ function renderHelperSection() {
   `;
 }
 function renderUpdateSection() {
-  var _a;
   const u = state.update;
   const status = u.checking ? "检查中…" : u.error ? `检查失败：${escapeHtml(u.error)}` : !u.checked ? "尚未检查" : u.updateAvailable ? `发现新版本：${escapeHtml(u.latestVersion)}（当前 ${escapeHtml(u.currentVersion)}）` : `当前已是最新版本：${escapeHtml(u.currentVersion ?? "-")}`;
-  const backendSync = u.backendSync ? `<div class="cp-muted">后端同步：${u.backendSync.ok ? "成功/已跳过" : `失败：${escapeHtml(u.backendSync.error ?? "")}`}</div>` : "";
   return `
     <div class="cp-section">
       <b>更新检查</b>
@@ -665,10 +636,9 @@ function renderUpdateSection() {
       </div>
       <div class="cp-status cp-status-compact">${status}</div>
       <div class="cp-muted">上次检查：${fmtTime(u.lastCheckedAt)}；已跳过版本：${escapeHtml(state.localSettings.skippedUpdateVersion || "-")}</div>
-      ${backendSync}
       <div class="cp-actions cp-actions-top">
         <button id="cp_check_update" class="menu_button" ${u.checking ? "disabled" : ""}>检查更新</button>
-        <button id="cp_run_update" class="menu_button" ${u.updateAvailable && !u.checking ? "" : "disabled"}>更新前端${((_a = state.backend) == null ? void 0 : _a.ok) ? "并同步后端" : ""}</button>
+        <button id="cp_run_update" class="menu_button" ${u.updateAvailable && !u.checking ? "" : "disabled"}>更新前端</button>
       </div>
     </div>
   `;
@@ -808,28 +778,27 @@ function renderChatSaveStats() {
   `;
 }
 function renderPanel() {
-  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
+  var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
   const root = ensurePanelShell();
   if (!root) return;
-  const cfg = (_a = state.backend) == null ? void 0 : _a.config;
   const s = ensureLocalSettings();
   root.innerHTML = `
     <div class="cp-status">${statusText()}</div>
-    <div class="cp-status">Early Bridge：${((_c = (_b = state.backend) == null ? void 0 : _b.earlyBridge) == null ? void 0 : _c.installed) ? state.backend.earlyBridge.upToDate ? "已安装（最新）" : "已安装（需更新）" : "未安装"}；注入位置：<code>${((_e = (_d = state.backend) == null ? void 0 : _d.earlyBridge) == null ? void 0 : _e.bridgeSrc) ?? "-"}</code></div>
+    <div class="cp-status">Early Bridge：${((_b = (_a = state.backend) == null ? void 0 : _a.earlyBridge) == null ? void 0 : _b.installed) ? state.backend.earlyBridge.upToDate ? "已安装（最新）" : "已安装（需更新）" : "未安装"}；注入位置：<code>${((_d = (_c = state.backend) == null ? void 0 : _c.earlyBridge) == null ? void 0 : _d.bridgeSrc) ?? "-"}</code></div>
     <div class="cp-help">
       通过 Service Worker + Early Bridge + 后端 Server Plugin 优化 SillyTavern 原始接口；当前优化 <code>/api/characters/all</code>、<code>/version</code>、<code>/api/settings/save</code> 与 <code>/api/chats/save</code>。
     </div>
 
     <div class="cp-actions">
       <button id="cp_refresh" class="menu_button">刷新状态</button>
-      <button id="cp_register_sw" class="menu_button" ${((_f = state.backend) == null ? void 0 : _f.ok) && state.sw.supported ? "" : "disabled"}>注册/更新 SW</button>
+      <button id="cp_register_sw" class="menu_button" ${((_e = state.backend) == null ? void 0 : _e.ok) && state.sw.supported ? "" : "disabled"}>注册/更新 SW</button>
       <button id="cp_unregister_sw" class="menu_button" ${state.sw.registered ? "" : "disabled"}>注销 SW</button>
-      <button id="cp_warm" class="menu_button" ${((_g = state.backend) == null ? void 0 : _g.ok) ? "" : "disabled"}>后台预热</button>
-      <button id="cp_warm_wait" class="menu_button" ${((_h = state.backend) == null ? void 0 : _h.ok) ? "" : "disabled"}>预热并等待</button>
-      <button id="cp_clear" class="menu_button" ${((_i = state.backend) == null ? void 0 : _i.ok) ? "" : "disabled"}>清空缓存</button>
-      <button id="cp_early_status" class="menu_button" ${((_j = state.backend) == null ? void 0 : _j.ok) ? "" : "disabled"}>刷新 Early 状态</button>
-      <button id="cp_early_install" class="menu_button" ${((_k = state.backend) == null ? void 0 : _k.ok) ? "" : "disabled"}>安装/更新 Early Bridge</button>
-      <button id="cp_early_uninstall" class="menu_button" ${((_m = (_l = state.backend) == null ? void 0 : _l.earlyBridge) == null ? void 0 : _m.installed) ? "" : "disabled"}>卸载 Early Bridge</button>
+      <button id="cp_warm" class="menu_button" ${((_f = state.backend) == null ? void 0 : _f.ok) ? "" : "disabled"}>后台预热</button>
+      <button id="cp_warm_wait" class="menu_button" ${((_g = state.backend) == null ? void 0 : _g.ok) ? "" : "disabled"}>预热并等待</button>
+      <button id="cp_clear" class="menu_button" ${((_h = state.backend) == null ? void 0 : _h.ok) ? "" : "disabled"}>清空缓存</button>
+      <button id="cp_early_status" class="menu_button" ${((_i = state.backend) == null ? void 0 : _i.ok) ? "" : "disabled"}>刷新 Early 状态</button>
+      <button id="cp_early_install" class="menu_button" ${((_j = state.backend) == null ? void 0 : _j.ok) ? "" : "disabled"}>安装/更新 Early Bridge</button>
+      <button id="cp_early_uninstall" class="menu_button" ${((_l = (_k = state.backend) == null ? void 0 : _k.earlyBridge) == null ? void 0 : _l.installed) ? "" : "disabled"}>卸载 Early Bridge</button>
     </div>
 
     ${renderUpdateSection()}
@@ -844,54 +813,6 @@ function renderPanel() {
         ${checkbox("cp_auto_refresh_chars", "ASYNC-MISS 后缓存就绪自动刷新角色列表", s.autoRefreshCharactersAfterAsyncMiss)}
         ${checkbox("cp_auto_check_updates", "启动后自动异步检查 GitHub 更新", s.autoCheckUpdates)}
       </div>
-    </div>
-
-    <div class="cp-section">
-      <b>后端配置</b>
-      ${cfg ? `
-        <div class="cp-grid">
-          ${checkbox("cp_cfg_enabled", "启用后端加速", cfg.enabled)}
-          ${checkbox("cp_cfg_sw", "允许提供 Service Worker", cfg.serviceWorkerEnabled)}
-          ${checkbox("cp_cfg_characters", "缓存 characters/all", cfg.cacheCharactersAll)}
-          ${checkbox("cp_cfg_version", "缓存 /version", cfg.cacheVersion)}
-          ${checkbox("cp_cfg_stale", "允许 stale-while-revalidate", cfg.staleWhileRevalidate)}
-          ${checkbox("cp_cfg_shallow_chars", "characters/all 返回浅层角色列表", cfg.shallowCharactersAll)}
-          ${checkbox("cp_cfg_disk_characters", "characters/all 浅层磁盘缓存（推荐）", cfg.diskCacheCharactersAll)}
-          ${checkbox("cp_cfg_disk_version", "/version 磁盘缓存", cfg.diskCacheVersion)}
-          ${checkbox("cp_cfg_fast_version", "/version 无缓存时快速文件响应并后台刷新", cfg.fastVersionOnMiss)}
-          ${checkbox("cp_cfg_async_chars", "无 characters 缓存时先返回空列表并后台构建", cfg.asyncCharactersAllOnMiss)}
-          ${checkbox("cp_cfg_early_enabled", "启用 Early Bridge 脚本", cfg.earlyBridgeEnabled)}
-          ${checkbox("cp_cfg_early_auto_install", "后端启动时自动注入 Early Bridge", cfg.autoInstallEarlyBridge)}
-          ${checkbox("cp_cfg_early_patch_fetch", "Early Bridge 在 script.js 前 patch fetch", cfg.earlyBridgePatchFetch)}
-          ${checkbox("cp_cfg_settings_get", "优化 /api/settings/get 下载", cfg.optimizeSettingsGet)}
-          ${checkbox("cp_cfg_settings_get_cache", "缓存 settings/get 轻量响应", cfg.cacheSettingsGet)}
-          ${checkbox("cp_cfg_startup_preload", "提前预取 /version 响应", cfg.startupPreloadEnabled)}
-          ${checkbox("cp_cfg_template_preload", "并行预取 scripts/templates 模板", cfg.templatePreloadEnabled)}
-          ${checkbox("cp_cfg_sw_fast_route_fallback", "SW 兜底 /version 与 characters/all（默认关）", cfg.serviceWorkerFastRouteFallback)}
-          ${checkbox("cp_cfg_sw_settings_get_fallback", "SW 兜底 settings/get（默认关）", cfg.serviceWorkerSettingsGetFallback)}
-          ${checkbox("cp_cfg_sw_settings_save_fallback", "SW 兜底 settings/save（默认关）", cfg.serviceWorkerSettingsSaveFallback)}
-          ${checkbox("cp_cfg_sw_chat_save_fallback", "SW 兜底 chat/save（默认关）", cfg.serviceWorkerChatSaveFallback)}
-          ${checkbox("cp_cfg_sw_template_fallback", "SW 兜底模板缓存（默认关）", cfg.serviceWorkerTemplateFallback)}
-          ${checkbox("cp_cfg_module_proxy", "模块代理替换酒馆串行代码", cfg.moduleProxyEnabled)}
-          ${checkbox("cp_cfg_patch_startup_init", "替换 firstLoadInit 串行等待", cfg.patchStartupInit)}
-          ${checkbox("cp_cfg_patch_i18n_init", "替换 initLocales 串行等待", cfg.patchI18nInit)}
-          ${checkbox("cp_cfg_patch_system_messages", "替换 initSystemMessages 模板串行", cfg.patchSystemMessagesInit)}
-          ${checkbox("cp_cfg_patch_extension_manifests", "替换 getManifests 使用预取结果", cfg.patchExtensionManifests)}
-          ${checkbox("cp_cfg_patch_parallel_extensions", "并行激活扩展（实验）", cfg.patchParallelActivateExtensions)}
-          ${checkbox("cp_cfg_settings_save", "优化 /api/settings/save 大上传", cfg.optimizeSettingsSave)}
-          ${checkbox("cp_cfg_settings_save_noop", "settings/save 启用 no-op hash", cfg.settingsSaveNoopEnabled)}
-          ${checkbox("cp_cfg_settings_save_patch", "settings/save 启用深层 JSON patch", cfg.settingsSavePatchEnabled)}
-          ${checkbox("cp_cfg_chat_save", "优化 /api/chats/save 大上传", cfg.optimizeChatSave)}
-          ${checkbox("cp_cfg_chat_save_noop", "chat/save 启用 no-op hash", cfg.chatSaveNoopEnabled)}
-          ${checkbox("cp_cfg_chat_save_patch", "chat/save 启用聊天 patch", cfg.chatSavePatchEnabled)}
-          <label class="cp-field">最大 stale 时间(ms)<input id="cp_cfg_max_stale" type="number" min="0" max="86400000" step="1000" value="${cfg.maxStaleMs}"></label>
-          <label class="cp-field">settings patch 最大操作数<input id="cp_cfg_settings_save_max_ops" type="number" min="1" max="100000" step="100" value="${cfg.settingsSaveMaxPatchOperations}"></label>
-          <label class="cp-field">settings patch/full 比例阈值<input id="cp_cfg_settings_save_ratio" type="number" min="0.05" max="2" step="0.05" value="${cfg.settingsSaveMaxPatchBytesRatio}"></label>
-          <label class="cp-field">chat patch 最大操作数<input id="cp_cfg_chat_save_max_ops" type="number" min="1" max="100000" step="100" value="${cfg.chatSaveMaxPatchOperations}"></label>
-          <label class="cp-field">chat patch/full 比例阈值<input id="cp_cfg_chat_save_ratio" type="number" min="0.05" max="2" step="0.05" value="${cfg.chatSaveMaxPatchBytesRatio}"></label>
-          <label class="cp-field">chat 后端缓存条目<input id="cp_cfg_chat_save_cache_entries" type="number" min="0" max="1024" step="1" value="${cfg.chatSaveCacheMaxEntries}"></label>
-        </div>
-      ` : '<div class="cp-muted">后端不可用，无法显示配置。</div>'}
     </div>
 
     <div class="cp-section">
@@ -947,74 +868,6 @@ function bindPanelEvents(root) {
   onLocalBool("cp_auto_warm", "autoWarm");
   onLocalBool("cp_auto_refresh_chars", "autoRefreshCharactersAfterAsyncMiss");
   onLocalBool("cp_auto_check_updates", "autoCheckUpdates");
-  const onCfgBool = (id, key) => {
-    const el = root.querySelector(`#${id}`);
-    el == null ? void 0 : el.addEventListener("change", () => runBusy(() => updateBackendConfig({ [key]: Boolean(el.checked) })));
-  };
-  onCfgBool("cp_cfg_enabled", "enabled");
-  onCfgBool("cp_cfg_sw", "serviceWorkerEnabled");
-  onCfgBool("cp_cfg_characters", "cacheCharactersAll");
-  onCfgBool("cp_cfg_version", "cacheVersion");
-  onCfgBool("cp_cfg_stale", "staleWhileRevalidate");
-  onCfgBool("cp_cfg_shallow_chars", "shallowCharactersAll");
-  onCfgBool("cp_cfg_disk_characters", "diskCacheCharactersAll");
-  onCfgBool("cp_cfg_disk_version", "diskCacheVersion");
-  onCfgBool("cp_cfg_fast_version", "fastVersionOnMiss");
-  onCfgBool("cp_cfg_async_chars", "asyncCharactersAllOnMiss");
-  onCfgBool("cp_cfg_early_enabled", "earlyBridgeEnabled");
-  onCfgBool("cp_cfg_early_auto_install", "autoInstallEarlyBridge");
-  onCfgBool("cp_cfg_early_patch_fetch", "earlyBridgePatchFetch");
-  onCfgBool("cp_cfg_settings_get", "optimizeSettingsGet");
-  onCfgBool("cp_cfg_settings_get_cache", "cacheSettingsGet");
-  onCfgBool("cp_cfg_startup_preload", "startupPreloadEnabled");
-  onCfgBool("cp_cfg_template_preload", "templatePreloadEnabled");
-  onCfgBool("cp_cfg_sw_fast_route_fallback", "serviceWorkerFastRouteFallback");
-  onCfgBool("cp_cfg_sw_settings_get_fallback", "serviceWorkerSettingsGetFallback");
-  onCfgBool("cp_cfg_sw_settings_save_fallback", "serviceWorkerSettingsSaveFallback");
-  onCfgBool("cp_cfg_sw_chat_save_fallback", "serviceWorkerChatSaveFallback");
-  onCfgBool("cp_cfg_sw_template_fallback", "serviceWorkerTemplateFallback");
-  onCfgBool("cp_cfg_module_proxy", "moduleProxyEnabled");
-  onCfgBool("cp_cfg_patch_startup_init", "patchStartupInit");
-  onCfgBool("cp_cfg_patch_i18n_init", "patchI18nInit");
-  onCfgBool("cp_cfg_patch_system_messages", "patchSystemMessagesInit");
-  onCfgBool("cp_cfg_patch_extension_manifests", "patchExtensionManifests");
-  onCfgBool("cp_cfg_patch_parallel_extensions", "patchParallelActivateExtensions");
-  onCfgBool("cp_cfg_settings_save", "optimizeSettingsSave");
-  onCfgBool("cp_cfg_settings_save_noop", "settingsSaveNoopEnabled");
-  onCfgBool("cp_cfg_settings_save_patch", "settingsSavePatchEnabled");
-  onCfgBool("cp_cfg_chat_save", "optimizeChatSave");
-  onCfgBool("cp_cfg_chat_save_noop", "chatSaveNoopEnabled");
-  onCfgBool("cp_cfg_chat_save_patch", "chatSavePatchEnabled");
-  const staleEl = root.querySelector("#cp_cfg_max_stale");
-  staleEl == null ? void 0 : staleEl.addEventListener("change", () => {
-    const value = Math.max(0, Math.min(864e5, Math.trunc(Number(staleEl.value) || 0)));
-    runBusy(() => updateBackendConfig({ maxStaleMs: value }));
-  });
-  const settingsSaveMaxOpsEl = root.querySelector("#cp_cfg_settings_save_max_ops");
-  settingsSaveMaxOpsEl == null ? void 0 : settingsSaveMaxOpsEl.addEventListener("change", () => {
-    const value = Math.max(1, Math.min(1e5, Math.trunc(Number(settingsSaveMaxOpsEl.value) || 2e3)));
-    runBusy(() => updateBackendConfig({ settingsSaveMaxPatchOperations: value }));
-  });
-  const settingsSaveRatioEl = root.querySelector("#cp_cfg_settings_save_ratio");
-  settingsSaveRatioEl == null ? void 0 : settingsSaveRatioEl.addEventListener("change", () => {
-    const value = Math.max(0.05, Math.min(2, Number(settingsSaveRatioEl.value) || 0.85));
-    runBusy(() => updateBackendConfig({ settingsSaveMaxPatchBytesRatio: value }));
-  });
-  const chatSaveMaxOpsEl = root.querySelector("#cp_cfg_chat_save_max_ops");
-  chatSaveMaxOpsEl == null ? void 0 : chatSaveMaxOpsEl.addEventListener("change", () => {
-    const value = Math.max(1, Math.min(1e5, Math.trunc(Number(chatSaveMaxOpsEl.value) || 5e3)));
-    runBusy(() => updateBackendConfig({ chatSaveMaxPatchOperations: value }));
-  });
-  const chatSaveRatioEl = root.querySelector("#cp_cfg_chat_save_ratio");
-  chatSaveRatioEl == null ? void 0 : chatSaveRatioEl.addEventListener("change", () => {
-    const value = Math.max(0.05, Math.min(2, Number(chatSaveRatioEl.value) || 0.85));
-    runBusy(() => updateBackendConfig({ chatSaveMaxPatchBytesRatio: value }));
-  });
-  const chatSaveCacheEntriesEl = root.querySelector("#cp_cfg_chat_save_cache_entries");
-  chatSaveCacheEntriesEl == null ? void 0 : chatSaveCacheEntriesEl.addEventListener("change", () => {
-    const value = Math.max(0, Math.min(1024, Math.trunc(Number(chatSaveCacheEntriesEl.value) || 64)));
-    runBusy(() => updateBackendConfig({ chatSaveCacheMaxEntries: value }));
-  });
 }
 async function runBusy(fn) {
   if (state.busy) return;
@@ -1122,34 +975,4 @@ if (document.readyState === "loading") {
 } else {
   void init();
 }
-async function onCocktailPlusDelete() {
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = setTimeout(() => {
-    try {
-      controller == null ? void 0 : controller.abort();
-    } catch {
-    }
-  }, 2500);
-  try {
-    await fetch("/api/plugins/cocktail-plus/early/uninstall", {
-      method: "POST",
-      headers: (() => {
-        var _a, _b;
-        try {
-          return ((_b = (_a = getCtx()) == null ? void 0 : _a.getRequestHeaders) == null ? void 0 : _b.call(_a)) ?? { "Content-Type": "application/json" };
-        } catch {
-          return { "Content-Type": "application/json" };
-        }
-      })(),
-      body: JSON.stringify({ noBackup: false }),
-      cache: "no-store",
-      signal: controller == null ? void 0 : controller.signal
-    }).catch(() => null);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-export {
-  onCocktailPlusDelete
-};
 //# sourceMappingURL=index.js.map

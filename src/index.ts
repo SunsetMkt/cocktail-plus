@@ -86,25 +86,3 @@ if (document.readyState === 'loading') {
 } else {
   void init();
 }
-
-export async function onCocktailPlusDelete() {
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = setTimeout(() => {
-    try { controller?.abort(); } catch { /* ignore */ }
-  }, 2500);
-
-  try {
-    await fetch('/api/plugins/cocktail-plus/early/uninstall', {
-      method: 'POST',
-      headers: (() => {
-        try { return getCtx()?.getRequestHeaders?.() ?? { 'Content-Type': 'application/json' }; }
-        catch { return { 'Content-Type': 'application/json' }; }
-      })(),
-      body: JSON.stringify({ noBackup: false }),
-      cache: 'no-store',
-      signal: controller?.signal,
-    }).catch(() => null);
-  } finally {
-    clearTimeout(timer);
-  }
-}
