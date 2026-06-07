@@ -11,6 +11,22 @@ function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function getEarlyBridge(): any {
+  return (globalThis as any).__cocktailPlusEarlyBridge;
+}
+
+function syncEarlyCharacterProgress(row: any) {
+  try {
+    const early = getEarlyBridge();
+    if (!early?.updateCharactersLoadProgress) return;
+    if (row?.progress) {
+      early.updateCharactersLoadProgress({ cache: 'ASYNC-MISS', ...row.progress });
+    } else {
+      early.updateCharactersLoadProgress({ cache: 'ASYNC-MISS', phase: row?.refreshing ? 'requesting' : 'starting' });
+    }
+  } catch { /* ignore */ }
+}
+
 export function markAppReady() {
   appReady = true;
 }
@@ -35,7 +51,11 @@ async function waitForCharactersCacheReady(maxMs = 60_000) {
       const status = await postJson<BackendProbe>(`${API_PREFIX}/status`, {});
       state.backend = { ...(state.backend || { ok: true }), ...status } as BackendProbe;
       const row = status.status?.find(x => x.endpointKey === 'characters-all');
+      syncEarlyCharacterProgress(row);
       if (row?.entry && !row.refreshing) {
+        try {
+          getEarlyBridge()?.finishCharactersLoadProgress?.('cached', 1200);
+        } catch { /* ignore */ }
         log('characters cache ready for async refresh', row.entry);
         return true;
       }

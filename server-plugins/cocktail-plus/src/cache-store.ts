@@ -11,6 +11,10 @@ import { stats } from './stats.js';
 export const memoryCache = new Map();
 /** @type {Map<string, Promise<any>>} */
 export const inflight = new Map();
+/** @type {Map<string, any>} */
+export const refreshProgress = new Map();
+
+const PROGRESS_RETENTION_MS = 30 * 1000;
 
 export function getDiskRoot() {
     // Keep cache inside this server plugin folder so users can clearly see
@@ -76,6 +80,87 @@ export function getCachedEntry(ctx, endpointKey) {
     return entry || null;
 }
 
+function finiteNumber(value, fallback = null) {
+    if (value === null || value === undefined || value === '') return fallback;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+}
+
+function normalizeProgress(progress) {
+    if (!progress) return null;
+    const startedAt = finiteNumber(progress.startedAt, Date.now());
+    const updatedAt = finiteNumber(progress.updatedAt, startedAt);
+    const bytesReceived = Math.max(0, finiteNumber(progress.bytesReceived, 0) || 0);
+    const totalBytesRaw = finiteNumber(progress.totalBytes, null);
+    const totalBytes = totalBytesRaw && totalBytesRaw > 0 ? totalBytesRaw : null;
+    const speedBps = Math.max(0, finiteNumber(progress.speedBps, 0) || 0);
+    const percentRaw = finiteNumber(progress.percent, null);
+    const percent = percentRaw === null ? null : Math.max(0, Math.min(100, percentRaw));
+    const etaRaw = finiteNumber(progress.etaMs, null);
+    return {
+        endpointKey: progress.endpointKey || null,
+        reason: progress.reason || null,
+        phase: progress.phase || 'starting',
+        startedAt,
+        updatedAt,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        ageMs: Math.max(0, Date.now() - updatedAt),
+        bytesReceived,
+        totalBytes,
+        speedBps,
+        percent,
+        etaMs: etaRaw === null ? null : Math.max(0, etaRaw),
+        status: finiteNumber(progress.status, null),
+        error: progress.error || null,
+    };
+}
+
+export function setRefreshProgress(key, endpointKey, patch = {}) {
+    if (!key) return null;
+    const now = Date.now();
+    const previous = refreshProgress.get(key) || {
+        key,
+        endpointKey,
+        phase: 'starting',
+        reason: null,
+        startedAt: now,
+        updatedAt: now,
+        bytesReceived: 0,
+        totalBytes: null,
+        speedBps: 0,
+        percent: null,
+        etaMs: null,
+        status: null,
+        error: null,
+    };
+    const next = {
+        ...previous,
+        ...patch,
+        key,
+        endpointKey: endpointKey || previous.endpointKey,
+        updatedAt: now,
+    };
+    if (patch.startedAt !== undefined) next.startedAt = patch.startedAt;
+    if (!next.startedAt) next.startedAt = now;
+    refreshProgress.set(key, next);
+    return normalizeProgress(next);
+}
+
+export function getRefreshProgress(key) {
+    return normalizeProgress(refreshProgress.get(key));
+}
+
+export function scheduleClearRefreshProgress(key, delayMs = PROGRESS_RETENTION_MS) {
+    if (!key) return;
+    const snapshot = refreshProgress.get(key);
+    const updatedAt = snapshot?.updatedAt || Date.now();
+    const timer = setTimeout(() => {
+        const current = refreshProgress.get(key);
+        if (current && (current.updatedAt || 0) <= updatedAt) refreshProgress.delete(key);
+    }, Math.max(0, delayMs));
+    if (typeof timer.unref === 'function') timer.unref();
+}
+
 export function summarizeEntry(entry) {
     if (!entry) return null;
     return {
@@ -95,11 +180,15 @@ export function summarizeEntry(entry) {
 
 export function getUserStatus(ctx) {
     const baseCtx = { ...ctx, body: {}, bodyText: '{}' };
-    return Object.keys(ENDPOINTS).map(endpointKey => ({
-        endpointKey,
-        entry: summarizeEntry(getCachedEntry(baseCtx, endpointKey)),
-        refreshing: inflight.has(getCacheKey(baseCtx, endpointKey)),
-    }));
+    return Object.keys(ENDPOINTS).map(endpointKey => {
+        const key = getCacheKey(baseCtx, endpointKey);
+        return {
+            endpointKey,
+            entry: summarizeEntry(getCachedEntry(baseCtx, endpointKey)),
+            refreshing: inflight.has(key),
+            progress: getRefreshProgress(key),
+        };
+    });
 }
 
 export function invalidateForUser(ctx, endpointKeys) {
@@ -110,6 +199,11 @@ export function invalidateForUser(ctx, endpointKeys) {
             if (key.startsWith(prefix)) {
                 memoryCache.delete(key);
                 removed++;
+            }
+        }
+        for (const key of Array.from(refreshProgress.keys())) {
+            if (key.startsWith(prefix)) {
+                refreshProgress.delete(key);
             }
         }
     }
@@ -126,4 +220,5 @@ export function invalidateForUser(ctx, endpointKeys) {
 export function clearCacheStores() {
     memoryCache.clear();
     inflight.clear();
+    refreshProgress.clear();
 }

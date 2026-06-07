@@ -63,7 +63,12 @@ async function init() {
     if (data?.source === SW_MESSAGE_SOURCE) {
       log(`SW: ${data.type || 'message'}`, data);
       if (data.path === '/api/characters/all' && data.cache === 'ASYNC-MISS') {
+        try {
+          (globalThis as any).__cocktailPlusEarlyBridge?.updateCharactersLoadProgress?.({ cache: 'ASYNC-MISS', phase: 'requesting', ...(data.progress || {}) });
+        } catch { /* ignore */ }
         scheduleCharactersRefreshAfterAsyncMiss('service-worker-message');
+      } else if (data.path === '/api/characters/all' && data.progress) {
+        try { (globalThis as any).__cocktailPlusEarlyBridge?.updateCharactersLoadProgress?.(data.progress); } catch { /* ignore */ }
       }
     }
   });

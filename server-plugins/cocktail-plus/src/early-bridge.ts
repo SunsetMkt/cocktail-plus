@@ -315,6 +315,266 @@ ${fastRoutes}
   var state = window[FLAG] = window[FLAG] || { version: VERSION, installedAt: Date.now(), events: [], patchedFetch: false, swRegisterStarted: false, settingsSave: { baselineHash: '', captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0 }, chatSave: { baselineCount: 0, captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0, evictions: 0 } };
   state.settingsSave = state.settingsSave || { baselineHash: '', captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0 };
   state.chatSave = state.chatSave || { baselineCount: 0, captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0, evictions: 0 };
+  state.charactersLoad = state.charactersLoad || { active: false, phase: 'idle', cache: '', startedAt: 0, updatedAt: 0, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, message: '' };
+  var characterProgressStatusTimer = null;
+  var characterProgressRenderTimer = null;
+  var characterProgressRowTimer = null;
+
+  function cpNumber(value, fallback) {
+    if (value === null || value === undefined || value === '') return fallback;
+    var n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function cpClampPercent(value) {
+    var n = cpNumber(value, null);
+    return n === null ? null : Math.max(0, Math.min(100, n));
+  }
+
+  function cpFormatBytes(value) {
+    var bytes = Math.max(0, cpNumber(value, 0) || 0);
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i += 1; }
+    return bytes.toFixed(i === 0 ? 0 : bytes >= 10 ? 1 : 2) + units[i];
+  }
+
+  function cpFormatDuration(value) {
+    var seconds = Math.max(0, Math.round((cpNumber(value, 0) || 0) / 1000));
+    if (seconds < 60) return seconds + 's';
+    var minutes = Math.floor(seconds / 60);
+    seconds = seconds % 60;
+    if (minutes < 60) return minutes + 'm ' + seconds + 's';
+    var hours = Math.floor(minutes / 60);
+    return hours + 'h ' + (minutes % 60) + 'm';
+  }
+
+  function cpGetCharactersBlock() {
+    try { return document.getElementById('rm_print_characters_block'); } catch (_) { return null; }
+  }
+
+  function cpHasCharacterRows(block) {
+    try { return !!(block && block.querySelector('.character_select,.group_select,.bogus_folder_select')); } catch (_) { return false; }
+  }
+
+  function cpEnsureCharacterProgressStyle() {
+    try {
+      if (document.getElementById('cocktail-plus-character-load-style')) return;
+      var style = document.createElement('style');
+      style.id = 'cocktail-plus-character-load-style';
+      style.textContent = [
+        '#cocktail-plus-character-load-progress{box-sizing:border-box;width:calc(100% - 12px);margin:8px 6px 10px;padding:12px;border:1px solid rgba(120,170,255,.35);border-radius:10px;background:linear-gradient(180deg,rgba(35,45,65,.96),rgba(22,28,40,.96));box-shadow:0 8px 24px rgba(0,0,0,.18);color:#e9f1ff;font-size:13px;line-height:1.45;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-title{font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-title:before{content:"";display:inline-block;width:8px;height:8px;border-radius:999px;background:#7ab6ff;box-shadow:0 0 10px #7ab6ff;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-message{opacity:.92;margin-bottom:8px;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-track{position:relative;overflow:hidden;height:8px;border-radius:999px;background:rgba(255,255,255,.12);}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-bar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#69d2ff,#8f8cff);transition:width .18s ease;}',
+        '#cocktail-plus-character-load-progress.cp-indeterminate .cp-char-progress-bar{width:38%;animation:cpCharIndeterminate 1.2s ease-in-out infinite;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-meta{margin-top:8px;display:flex;flex-wrap:wrap;gap:8px 12px;opacity:.78;font-size:12px;}',
+        '#rm_print_characters_block.cp-character-loading .empty_block{display:none!important;}',
+        '@keyframes cpCharIndeterminate{0%{transform:translateX(-110%)}50%{transform:translateX(60%)}100%{transform:translateX(260%)}}'
+      ].join('');
+      (document.head || document.documentElement).appendChild(style);
+    } catch (_) {}
+  }
+
+  function cpEnsureCharacterProgressElement() {
+    var block = cpGetCharactersBlock();
+    if (!block || cpHasCharacterRows(block)) return null;
+    cpEnsureCharacterProgressStyle();
+    block.classList.add('cp-character-loading');
+    var el = document.getElementById('cocktail-plus-character-load-progress');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cocktail-plus-character-load-progress';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.innerHTML = '<div class="cp-char-progress-title">鸡尾酒+ 正在加载角色列表</div><div class="cp-char-progress-message"></div><div class="cp-char-progress-track"><div class="cp-char-progress-bar"></div></div><div class="cp-char-progress-meta"></div>';
+    }
+    if (el.parentNode !== block) block.insertBefore(el, block.firstChild || null);
+    return el;
+  }
+
+  function cpProgressMessage(data) {
+    if (data && data.message) return data.message;
+    var cache = String(data && data.cache || '');
+    var phase = String(data && data.phase || '');
+    if (cache === 'ASYNC-MISS') return '后端正在构建角色缓存，首次加载可能较久…';
+    if (phase === 'requesting' || phase === 'starting') return '等待 SillyTavern 原始接口返回角色列表…';
+    if (phase === 'downloading') return '正在下载角色列表数据…';
+    if (phase === 'transforming') return '正在整理角色缓存…';
+    if (phase === 'cached') return '缓存已就绪，正在刷新角色列表…';
+    if (phase === 'rendering') return '角色数据已返回，正在解析并渲染列表…';
+    if (phase === 'error') return '角色列表加载遇到问题，正在回退/等待重试…';
+    return '正在加载角色列表…';
+  }
+
+  function cpRenderCharacterProgress() {
+    try {
+      var data = state.charactersLoad || {};
+      if (!data.active) return;
+      var block = cpGetCharactersBlock();
+      if (cpHasCharacterRows(block)) { cpRemoveCharacterProgress(); return; }
+      var el = cpEnsureCharacterProgressElement();
+      if (!el) return;
+      var percent = cpClampPercent(data.percent);
+      var determinate = percent !== null;
+      el.classList.toggle('cp-indeterminate', !determinate);
+      var bar = el.querySelector('.cp-char-progress-bar');
+      if (bar && determinate) bar.style.width = percent.toFixed(1) + '%';
+      var msg = el.querySelector('.cp-char-progress-message');
+      if (msg) msg.textContent = cpProgressMessage(data);
+      var parts = [];
+      var received = Math.max(0, cpNumber(data.bytesReceived, 0) || 0);
+      var total = cpNumber(data.totalBytes, null);
+      if (total && total > 0) parts.push('已接收 ' + cpFormatBytes(received) + ' / ' + cpFormatBytes(total));
+      else if (received > 0) parts.push('已接收 ' + cpFormatBytes(received));
+      if (determinate) parts.push(percent.toFixed(1) + '%');
+      if ((cpNumber(data.speedBps, 0) || 0) > 0) parts.push(cpFormatBytes(data.speedBps) + '/s');
+      if (cpNumber(data.etaMs, null) !== null && (cpNumber(data.etaMs, 0) || 0) > 0) parts.push('剩余 ' + cpFormatDuration(data.etaMs));
+      else if (data.startedAt) parts.push('已用 ' + cpFormatDuration(Date.now() - data.startedAt));
+      if (data.cache) parts.push('缓存状态 ' + data.cache);
+      if (data.phase) parts.push('阶段 ' + data.phase);
+      if (data.error) parts.push('错误 ' + data.error);
+      var meta = el.querySelector('.cp-char-progress-meta');
+      if (meta) meta.textContent = parts.join(' · ');
+    } catch (error) {
+      remember('characters.progress.render-error', { error: String(error && error.message || error) });
+    }
+  }
+
+  function cpStartCharacterRenderTimer() {
+    if (characterProgressRenderTimer) return;
+    characterProgressRenderTimer = setInterval(function () {
+      if (!state.charactersLoad || !state.charactersLoad.active) { clearInterval(characterProgressRenderTimer); characterProgressRenderTimer = null; return; }
+      cpRenderCharacterProgress();
+    }, 500);
+  }
+
+  function cpUpdateCharacterProgress(patch) {
+    var now = Date.now();
+    var previous = state.charactersLoad || {};
+    var next = Object.assign({}, previous, patch || {});
+    next.active = patch && patch.active !== undefined ? !!patch.active : true;
+    next.startedAt = next.startedAt || now;
+    next.updatedAt = now;
+    next.bytesReceived = Math.max(0, cpNumber(next.bytesReceived, 0) || 0);
+    next.totalBytes = cpNumber(next.totalBytes, null);
+    if (!(next.totalBytes > 0)) next.totalBytes = null;
+    next.speedBps = Math.max(0, cpNumber(next.speedBps, 0) || 0);
+    next.percent = cpClampPercent(next.percent);
+    next.etaMs = cpNumber(next.etaMs, null);
+    state.charactersLoad = next;
+    cpStartCharacterRenderTimer();
+    try { window.dispatchEvent(new CustomEvent('cocktail-plus:characters-progress', { detail: Object.assign({}, next) })); } catch (_) {}
+    cpRenderCharacterProgress();
+    return next;
+  }
+
+  function cpRemoveCharacterProgress() {
+    try {
+      if (characterProgressStatusTimer) { clearTimeout(characterProgressStatusTimer); characterProgressStatusTimer = null; }
+      if (characterProgressRowTimer) { clearInterval(characterProgressRowTimer); characterProgressRowTimer = null; }
+      state.charactersLoad.active = false;
+      var block = cpGetCharactersBlock();
+      if (block) block.classList.remove('cp-character-loading');
+      var el = document.getElementById('cocktail-plus-character-load-progress');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    } catch (_) {}
+  }
+
+  function cpWaitRowsThenRemove(maxMs) {
+    if (characterProgressRowTimer) clearInterval(characterProgressRowTimer);
+    var started = Date.now();
+    characterProgressRowTimer = setInterval(function () {
+      if (cpHasCharacterRows(cpGetCharactersBlock()) || Date.now() - started > Math.max(1000, maxMs || 20000)) {
+        clearInterval(characterProgressRowTimer);
+        characterProgressRowTimer = null;
+        cpRemoveCharacterProgress();
+      }
+    }, 500);
+  }
+
+  function cpFinishCharacterProgress(reason, delayMs) {
+    if (reason) cpUpdateCharacterProgress({ phase: reason === 'rendered' ? 'rendered' : 'cached', message: reason === 'rendered' ? '角色列表已显示' : '缓存已就绪，正在刷新角色列表…', percent: 100, etaMs: 0 });
+    if (characterProgressStatusTimer) { clearTimeout(characterProgressStatusTimer); characterProgressStatusTimer = null; }
+    setTimeout(function () { cpWaitRowsThenRemove(15000); }, Math.max(0, delayMs || 0));
+  }
+
+  function cpStartCharacterStatusPolling(rawFetch, sourceHeaders) {
+    if (characterProgressStatusTimer) clearTimeout(characterProgressStatusTimer);
+    var started = Date.now();
+    var poll = async function () {
+      try {
+        if (!state.charactersLoad || !state.charactersLoad.active) return;
+        var headers = new Headers();
+        try {
+          var token = sourceHeaders && sourceHeaders.get && sourceHeaders.get('x-csrf-token');
+          if (token) headers.set('x-csrf-token', token);
+          var auth = sourceHeaders && sourceHeaders.get && sourceHeaders.get('authorization');
+          if (auth) headers.set('authorization', auth);
+        } catch (_) {}
+        if (settingsGetCsrfToken && !headers.has('x-csrf-token')) headers.set('x-csrf-token', settingsGetCsrfToken);
+        headers.set('content-type', 'application/json');
+        headers.set(HEADER_PREFIX + '-early', VERSION);
+        var response = await rawFetch(PREFIX + '/status', { method: 'POST', headers: headers, credentials: 'same-origin', cache: 'no-store', redirect: 'manual', body: '{}' });
+        if (response && response.ok) {
+          var data = await response.json();
+          var rows = Array.isArray(data && data.status) ? data.status : [];
+          var row = rows.find(function (item) { return item && item.endpointKey === 'characters-all'; });
+          if (row && row.progress) cpUpdateCharacterProgress(Object.assign({ cache: 'ASYNC-MISS' }, row.progress));
+          else cpUpdateCharacterProgress({ cache: 'ASYNC-MISS', phase: row && row.refreshing ? 'requesting' : 'starting' });
+          if (row && row.entry && !row.refreshing) { cpFinishCharacterProgress('cached', 1200); return; }
+        }
+      } catch (error) {
+        cpUpdateCharacterProgress({ phase: 'requesting', error: String(error && error.message || error) });
+      }
+      if (Date.now() - started > 5 * 60 * 1000) { cpUpdateCharacterProgress({ phase: 'error', error: 'status polling timeout' }); return; }
+      characterProgressStatusTimer = setTimeout(poll, 700);
+    };
+    characterProgressStatusTimer = setTimeout(poll, 300);
+  }
+
+  state.updateCharactersLoadProgress = cpUpdateCharacterProgress;
+  state.finishCharactersLoadProgress = cpFinishCharacterProgress;
+
+
+  function cpEndpointsToInvalidate(pathname) {
+    var out = [];
+    if (String(pathname || '').startsWith('/api/characters/') && pathname !== '/api/characters/all' && pathname !== '/api/characters/get' && pathname !== '/api/characters/chats' && pathname !== '/api/characters/export') out.push('characters-all');
+    if (pathname === '/api/chats/save' || pathname === '/api/chats/group/save' || pathname === '/api/chats/delete' || pathname === '/api/chats/group/delete' || pathname === '/api/chats/import' || pathname === '/api/chats/group/import') out.push('characters-all');
+    return out.filter(function (item, index) { return item && out.indexOf(item) === index; });
+  }
+
+  async function cpNotifyInvalidate(rawFetch, input, init, endpoints, reason) {
+    try {
+      if (!rawFetch || !endpoints || !endpoints.length) return;
+      var headers = cloneHeaders(input, init);
+      headers.set('content-type', 'application/json');
+      await rawFetch(PREFIX + '/invalidate', {
+        method: 'POST',
+        headers: headers,
+        credentials: (init && init.credentials) || 'same-origin',
+        cache: 'no-store',
+        redirect: 'manual',
+        body: JSON.stringify({ endpoints: endpoints, reason: reason || '' })
+      });
+      remember('invalidate.done', { endpoints: endpoints, reason: reason || '' });
+    } catch (error) {
+      remember('invalidate.error', { endpoints: endpoints || [], reason: reason || '', error: String(error && error.message || error) });
+    }
+  }
+
+  async function cpFetchWithInvalidation(rawFetch, input, init, url, method) {
+    var endpoints = url && url.origin === location.origin && method === 'POST' ? cpEndpointsToInvalidate(url.pathname) : [];
+    if (!endpoints.length) return rawFetch(input, init);
+    var response = await rawFetch(input, init);
+    if (response && response.ok) {
+      await cpNotifyInvalidate(rawFetch, input, init, endpoints, url.pathname);
+    }
+    return response;
+  }
+
   var settingsBaseline = null;
   var chatSaveBaselines = new Map();
   var settingsGetPrefetch = null;
@@ -1452,6 +1712,7 @@ ${fastRoutes}
           state.chatSave.optimized += 1;
           state.chatSave.savedBytes += patch.savedBytes || 0;
           if (saveState !== 'NOOP-STALE') await updateChatBaseline(identity, body.chat, 'chat-save-' + patch.mode);
+          await cpNotifyInvalidate(rawFetch, input, init, ['characters-all'], url.pathname);
           remember('chat.save.optimized', { mode: patch.mode, kind: kind, status: fastResponse.status, state: saveState, savedBytes: patch.savedBytes || 0, durationMs: Date.now() - startedAt });
           return fastResponse;
         }
@@ -1463,7 +1724,10 @@ ${fastRoutes}
 
     var fallbackResponse = await rawFetch(input, init);
     state.chatSave.fallbacks += 1;
-    if (fallbackResponse && fallbackResponse.ok) await updateChatBaseline(identity, body.chat, patch ? 'chat-save-fallback' : 'chat-save-original');
+    if (fallbackResponse && fallbackResponse.ok) {
+      await updateChatBaseline(identity, body.chat, patch ? 'chat-save-fallback' : 'chat-save-original');
+      await cpNotifyInvalidate(rawFetch, input, init, ['characters-all'], url.pathname);
+    }
     remember('chat.save.original', { kind: kind, status: fallbackResponse && fallbackResponse.status, optimized: false, durationMs: Date.now() - startedAt });
     return fallbackResponse;
   }
@@ -1509,6 +1773,7 @@ ${fastRoutes}
 
   async function callFast(rawFetch, input, init, route, url, method) {
     var startedAt = Date.now();
+    var isCharactersAll = url && url.pathname === '/api/characters/all';
     if (method === 'GET') {
       var prefetched = fastGetPrefetches.get(url.pathname);
       if (prefetched && prefetched.promise) {
@@ -1525,6 +1790,10 @@ ${fastRoutes}
     var body = await getBody(input, init, method);
     if (method !== 'GET' && method !== 'HEAD' && !headers.has('content-type')) headers.set('content-type', 'application/json');
 
+    if (isCharactersAll) {
+      cpUpdateCharacterProgress({ active: true, phase: 'requesting', cache: '', message: '正在加载角色列表…', bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, error: null, startedAt: startedAt });
+      cpStartCharacterStatusPolling(rawFetch, headers);
+    }
     remember('intercept.start', { path: url.pathname, fastPath: route.path, method: method });
     try {
       var fastInit = {
@@ -1538,11 +1807,20 @@ ${fastRoutes}
       var response = await rawFetch(route.path, fastInit);
       if (response && response.status !== 404 && response.status !== 503) {
         var cacheState = response.headers.get(HEADER_PREFIX + '-state') || response.headers.get('x-cocktail-cache') || '';
+        if (isCharactersAll) {
+          cpUpdateCharacterProgress({ phase: cacheState === 'ASYNC-MISS' ? 'requesting' : 'rendering', cache: cacheState, status: response.status, percent: cacheState === 'ASYNC-MISS' ? null : 100, etaMs: 0, message: cacheState === 'ASYNC-MISS' ? '后端正在构建角色缓存，首次加载可能较久…' : '角色数据已返回，正在解析并渲染列表…' });
+          if (cacheState !== 'ASYNC-MISS') {
+            if (characterProgressStatusTimer) { clearTimeout(characterProgressStatusTimer); characterProgressStatusTimer = null; }
+            cpWaitRowsThenRemove(20000);
+          }
+        }
         remember('intercept.fast-response', { path: url.pathname, status: response.status, cache: cacheState, durationMs: Date.now() - startedAt });
         return response;
       }
+      if (isCharactersAll) cpUpdateCharacterProgress({ phase: 'requesting', message: '快速接口不可用，回退原始角色接口…' });
       remember('intercept.fallback-status', { path: url.pathname, status: response && response.status, durationMs: Date.now() - startedAt });
     } catch (error) {
+      if (isCharactersAll) cpUpdateCharacterProgress({ phase: 'error', error: String(error && error.message || error), message: '快速接口请求失败，正在回退原始角色接口…' });
       remember('intercept.error', { path: url.pathname, error: String(error && error.message || error), durationMs: Date.now() - startedAt });
     }
     return null;
@@ -1604,7 +1882,7 @@ ${fastRoutes}
         var fastResponse = await callFast(rawFetch, input, init, route, url, method);
         if (fastResponse) return fastResponse;
       }
-      return rawFetch(input, init);
+      return await cpFetchWithInvalidation(rawFetch, input, init, url, method);
     };
     state.patchedFetch = true;
     remember('fetch.patched', { routes: Array.from(FAST_ROUTES.keys()), settingsGet: SETTINGS_GET.enabled, settingsSave: SETTINGS_SAVE.enabled, chatSave: CHAT_SAVE.enabled });

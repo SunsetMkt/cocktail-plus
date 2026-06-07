@@ -5,7 +5,7 @@ import { ENDPOINTS } from './endpoint-registry.js';
 import { fetchOriginal } from './original-fetch.js';
 import { makeRequestContext } from './request-context.js';
 import { nextRequestId, stats } from './stats.js';
-import { getCacheKey, getCachedEntry, inflight, memoryCache, writeDiskEntry } from './cache-store.js';
+import { getCacheKey, getCachedEntry, inflight, memoryCache, scheduleClearRefreshProgress, setRefreshProgress, writeDiskEntry } from './cache-store.js';
 
 export function makeEntryFromBody(ctx, endpointKey, status, statusText, headers, bodyText, signature, durationMs, transform = null) {
     const now = Date.now();
@@ -19,16 +19,20 @@ function defaultTransformBodyForCache(bodyText) {
 export async function refreshEntry(ctx, endpointKey, reason = 'refresh') {
     const endpoint = ENDPOINTS[endpointKey];
     const key = getCacheKey(ctx, endpointKey);
+    const startedAt = Date.now();
+    const updateProgress = (patch = {}) => setRefreshProgress(key, endpointKey, patch);
     if (inflight.has(key)) {
         return await inflight.get(key);
     }
 
     const promise = (async () => {
         stats.refreshes++;
+        updateProgress({ phase: 'starting', reason, startedAt, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, status: null, error: null });
         const signature = endpoint.getSignature(ctx);
-        const result = await fetchOriginal(ctx, endpoint);
+        const result = await fetchOriginal(ctx, endpoint, { onProgress: updateProgress });
         if (result.ok && result.status >= 200 && result.status < 300) {
             const now = Date.now();
+            updateProgress({ phase: 'transforming', status: result.status, bytesReceived: result.bytesReceived ?? Buffer.byteLength(result.bodyText || '', 'utf8'), totalBytes: result.totalBytes ?? null, etaMs: 0 });
             const transformed = endpoint.transformBodyForCache
                 ? endpoint.transformBodyForCache(ctx, result.bodyText, config)
                 : defaultTransformBodyForCache(result.bodyText);
@@ -55,13 +59,19 @@ export async function refreshEntry(ctx, endpointKey, reason = 'refresh') {
             };
             memoryCache.set(key, entry);
             writeDiskEntry(ctx, endpointKey, entry);
+            updateProgress({ phase: 'cached', status: result.status, bytesReceived: result.bytesReceived ?? Buffer.byteLength(result.bodyText || '', 'utf8'), totalBytes: result.totalBytes ?? null, percent: result.totalBytes ? 100 : null, etaMs: 0, error: null });
+            scheduleClearRefreshProgress(key);
             return { result, entry, cached: true };
         }
+        updateProgress({ phase: 'error', status: result.status, bytesReceived: result.bytesReceived ?? Buffer.byteLength(result.bodyText || '', 'utf8'), totalBytes: result.totalBytes ?? null, error: `HTTP ${result.status || 0}` });
+        scheduleClearRefreshProgress(key);
         return { result, entry: null, cached: false };
     })()
         .catch((error) => {
             stats.errors++;
             stats.lastError = error instanceof Error ? error.message : String(error);
+            updateProgress({ phase: 'error', error: stats.lastError, status: null });
+            scheduleClearRefreshProgress(key);
             throw error;
         })
         .finally(() => inflight.delete(key));
@@ -150,12 +160,12 @@ export async function handleFast(req, res, endpointKey) {
             memoryCache.set(cacheKey, entry);
             return sendEntry(res, entry, 'HIT');
         }
-        if (config.staleWhileRevalidate) {
+        if (config.staleWhileRevalidate && signatureMatches) {
             stats.staleHits++;
             entry.staleHitCount = Number(entry.staleHitCount || 0) + 1;
             memoryCache.set(cacheKey, entry);
-            const state = signatureMatches ? 'STALE' : 'STALE-SIGNATURE';
-            void refreshEntry(ctx, endpointKey, signatureMatches ? 'max-stale-expired' : 'signature-changed').catch(() => {});
+            const state = 'STALE';
+            void refreshEntry(ctx, endpointKey, 'max-stale-expired').catch(() => {});
             return sendEntry(res, entry, state);
         }
     }
@@ -180,7 +190,7 @@ export async function handleFast(req, res, endpointKey) {
         return sendEntry(res, fastEntry, fastMiss.state, fastMiss.extraResponseHeaders);
     }
 
-    const asyncMiss = endpoint.makeAsyncMiss?.(ctx, signature, config);
+    const asyncMiss = !entry ? endpoint.makeAsyncMiss?.(ctx, signature, config) : null;
     if (asyncMiss) {
         stats.misses++;
         if (asyncMiss.refreshReason) void refreshEntry(ctx, endpointKey, asyncMiss.refreshReason).catch(() => {});

@@ -22,7 +22,7 @@ function readVersion() {
     if (version) return version;
   } catch {
   }
-  return "0.1.8";
+  return "0.1.9";
 }
 var VERSION = readVersion();
 var info = {
@@ -333,7 +333,63 @@ function pickResponseHeaders(response) {
   headers["content-type"] = contentType || "application/json; charset=utf-8";
   return headers;
 }
-async function fetchOriginal(ctx, endpoint) {
+function callProgress(onProgress, patch) {
+  try {
+    if (typeof onProgress === "function") onProgress(patch);
+  } catch {
+  }
+}
+function parseContentLength(response) {
+  const raw = response.headers.get("content-length");
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+function progressPatch(phase, startedAt, bytesReceived, totalBytes, extra = {}) {
+  const elapsedMs = Math.max(1, Date.now() - startedAt);
+  const speedBps = bytesReceived > 0 ? bytesReceived / (elapsedMs / 1e3) : 0;
+  const hasTotal = Number.isFinite(totalBytes) && totalBytes > 0;
+  const percent = hasTotal ? Math.max(0, Math.min(100, bytesReceived / totalBytes * 100)) : null;
+  const etaMs = hasTotal && speedBps > 0 ? Math.max(0, (totalBytes - bytesReceived) / speedBps * 1e3) : null;
+  return {
+    phase,
+    bytesReceived,
+    totalBytes: hasTotal ? totalBytes : null,
+    speedBps,
+    percent,
+    etaMs,
+    ...extra
+  };
+}
+async function readBodyWithProgress(response, onProgress, startedAt) {
+  const totalBytes = parseContentLength(response);
+  let bytesReceived = 0;
+  let lastEmitAt = 0;
+  callProgress(onProgress, progressPatch("downloading", startedAt, 0, totalBytes, { status: response.status }));
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const buffer = Buffer.from(value);
+      chunks.push(buffer);
+      bytesReceived += buffer.byteLength;
+      const now = Date.now();
+      if (now - lastEmitAt >= 100) {
+        lastEmitAt = now;
+        callProgress(onProgress, progressPatch("downloading", startedAt, bytesReceived, totalBytes, { status: response.status }));
+      }
+    }
+    callProgress(onProgress, progressPatch("downloading", startedAt, bytesReceived, totalBytes, { status: response.status, etaMs: 0, percent: totalBytes ? 100 : null }));
+    return { bodyText: Buffer.concat(chunks).toString("utf8"), bytesReceived, totalBytes };
+  }
+  const bodyText = await response.text();
+  bytesReceived = Buffer.byteLength(bodyText || "", "utf8");
+  callProgress(onProgress, progressPatch("downloading", startedAt, bytesReceived, totalBytes || bytesReceived, { status: response.status, etaMs: 0, percent: 100 }));
+  return { bodyText, bytesReceived, totalBytes: totalBytes || bytesReceived };
+}
+async function fetchOriginal(ctx, endpoint, options = {}) {
   const method = endpoint.method || "POST";
   const url = `${ctx.protocol}://${ctx.host}${endpoint.originalPath}`;
   const headers = {};
@@ -347,15 +403,18 @@ async function fetchOriginal(ctx, endpoint) {
   const startedAt = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5 * 60 * 1e3);
+  const onProgress = options?.onProgress;
   try {
     const fetchOptions = { method, headers, redirect: "manual", signal: controller.signal };
     if (method !== "GET" && method !== "HEAD") {
       fetchOptions.body = ctx.bodyText;
     }
+    callProgress(onProgress, { phase: "requesting", startedAt, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, status: null, error: null });
     const response = await fetch(url, fetchOptions);
-    const bodyText = await response.text();
+    callProgress(onProgress, { phase: "downloading", status: response.status, totalBytes: parseContentLength(response), bytesReceived: 0, speedBps: 0, percent: null, etaMs: null });
+    const { bodyText, bytesReceived, totalBytes } = await readBodyWithProgress(response, onProgress, startedAt);
     const durationMs = Date.now() - startedAt;
-    return { ok: response.ok, status: response.status, statusText: response.statusText, headers: pickResponseHeaders(response), bodyText, durationMs };
+    return { ok: response.ok, status: response.status, statusText: response.statusText, headers: pickResponseHeaders(response), bodyText, durationMs, bytesReceived, totalBytes };
   } finally {
     clearTimeout(timer);
   }
@@ -1403,6 +1462,8 @@ function nextRequestId(endpointKey = "request") {
 // server-plugins/cocktail-plus/src/cache-store.ts
 var memoryCache = /* @__PURE__ */ new Map();
 var inflight = /* @__PURE__ */ new Map();
+var refreshProgress = /* @__PURE__ */ new Map();
+var PROGRESS_RETENTION_MS = 30 * 1e3;
 function getDiskRoot() {
   return path7.join(PLUGIN_DIR, "cache");
 }
@@ -1456,6 +1517,82 @@ function getCachedEntry(ctx, endpointKey) {
   if (entry) memoryCache.set(key, entry);
   return entry || null;
 }
+function finiteNumber(value, fallback = null) {
+  if (value === null || value === void 0 || value === "") return fallback;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+function normalizeProgress(progress) {
+  if (!progress) return null;
+  const startedAt = finiteNumber(progress.startedAt, Date.now());
+  const updatedAt = finiteNumber(progress.updatedAt, startedAt);
+  const bytesReceived = Math.max(0, finiteNumber(progress.bytesReceived, 0) || 0);
+  const totalBytesRaw = finiteNumber(progress.totalBytes, null);
+  const totalBytes = totalBytesRaw && totalBytesRaw > 0 ? totalBytesRaw : null;
+  const speedBps = Math.max(0, finiteNumber(progress.speedBps, 0) || 0);
+  const percentRaw = finiteNumber(progress.percent, null);
+  const percent = percentRaw === null ? null : Math.max(0, Math.min(100, percentRaw));
+  const etaRaw = finiteNumber(progress.etaMs, null);
+  return {
+    endpointKey: progress.endpointKey || null,
+    reason: progress.reason || null,
+    phase: progress.phase || "starting",
+    startedAt,
+    updatedAt,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    ageMs: Math.max(0, Date.now() - updatedAt),
+    bytesReceived,
+    totalBytes,
+    speedBps,
+    percent,
+    etaMs: etaRaw === null ? null : Math.max(0, etaRaw),
+    status: finiteNumber(progress.status, null),
+    error: progress.error || null
+  };
+}
+function setRefreshProgress(key, endpointKey, patch = {}) {
+  if (!key) return null;
+  const now = Date.now();
+  const previous = refreshProgress.get(key) || {
+    key,
+    endpointKey,
+    phase: "starting",
+    reason: null,
+    startedAt: now,
+    updatedAt: now,
+    bytesReceived: 0,
+    totalBytes: null,
+    speedBps: 0,
+    percent: null,
+    etaMs: null,
+    status: null,
+    error: null
+  };
+  const next = {
+    ...previous,
+    ...patch,
+    key,
+    endpointKey: endpointKey || previous.endpointKey,
+    updatedAt: now
+  };
+  if (patch.startedAt !== void 0) next.startedAt = patch.startedAt;
+  if (!next.startedAt) next.startedAt = now;
+  refreshProgress.set(key, next);
+  return normalizeProgress(next);
+}
+function getRefreshProgress(key) {
+  return normalizeProgress(refreshProgress.get(key));
+}
+function scheduleClearRefreshProgress(key, delayMs = PROGRESS_RETENTION_MS) {
+  if (!key) return;
+  const snapshot = refreshProgress.get(key);
+  const updatedAt = snapshot?.updatedAt || Date.now();
+  const timer = setTimeout(() => {
+    const current = refreshProgress.get(key);
+    if (current && (current.updatedAt || 0) <= updatedAt) refreshProgress.delete(key);
+  }, Math.max(0, delayMs));
+  if (typeof timer.unref === "function") timer.unref();
+}
 function summarizeEntry(entry) {
   if (!entry) return null;
   return {
@@ -1474,11 +1611,15 @@ function summarizeEntry(entry) {
 }
 function getUserStatus(ctx) {
   const baseCtx = { ...ctx, body: {}, bodyText: "{}" };
-  return Object.keys(ENDPOINTS).map((endpointKey) => ({
-    endpointKey,
-    entry: summarizeEntry(getCachedEntry(baseCtx, endpointKey)),
-    refreshing: inflight.has(getCacheKey2(baseCtx, endpointKey))
-  }));
+  return Object.keys(ENDPOINTS).map((endpointKey) => {
+    const key = getCacheKey2(baseCtx, endpointKey);
+    return {
+      endpointKey,
+      entry: summarizeEntry(getCachedEntry(baseCtx, endpointKey)),
+      refreshing: inflight.has(key),
+      progress: getRefreshProgress(key)
+    };
+  });
 }
 function invalidateForUser(ctx, endpointKeys) {
   let removed = 0;
@@ -1488,6 +1629,11 @@ function invalidateForUser(ctx, endpointKeys) {
       if (key.startsWith(prefix)) {
         memoryCache.delete(key);
         removed++;
+      }
+    }
+    for (const key of Array.from(refreshProgress.keys())) {
+      if (key.startsWith(prefix)) {
+        refreshProgress.delete(key);
       }
     }
   }
@@ -1507,6 +1653,7 @@ function invalidateForUser(ctx, endpointKeys) {
 function clearCacheStores() {
   memoryCache.clear();
   inflight.clear();
+  refreshProgress.clear();
 }
 
 // server-plugins/cocktail-plus/src/early-bridge.ts
@@ -1782,6 +1929,266 @@ ${fastRoutes}
   var state = window[FLAG] = window[FLAG] || { version: VERSION, installedAt: Date.now(), events: [], patchedFetch: false, swRegisterStarted: false, settingsSave: { baselineHash: '', captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0 }, chatSave: { baselineCount: 0, captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0, evictions: 0 } };
   state.settingsSave = state.settingsSave || { baselineHash: '', captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0 };
   state.chatSave = state.chatSave || { baselineCount: 0, captures: 0, optimized: 0, fallbacks: 0, savedBytes: 0, evictions: 0 };
+  state.charactersLoad = state.charactersLoad || { active: false, phase: 'idle', cache: '', startedAt: 0, updatedAt: 0, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, message: '' };
+  var characterProgressStatusTimer = null;
+  var characterProgressRenderTimer = null;
+  var characterProgressRowTimer = null;
+
+  function cpNumber(value, fallback) {
+    if (value === null || value === undefined || value === '') return fallback;
+    var n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function cpClampPercent(value) {
+    var n = cpNumber(value, null);
+    return n === null ? null : Math.max(0, Math.min(100, n));
+  }
+
+  function cpFormatBytes(value) {
+    var bytes = Math.max(0, cpNumber(value, 0) || 0);
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i += 1; }
+    return bytes.toFixed(i === 0 ? 0 : bytes >= 10 ? 1 : 2) + units[i];
+  }
+
+  function cpFormatDuration(value) {
+    var seconds = Math.max(0, Math.round((cpNumber(value, 0) || 0) / 1000));
+    if (seconds < 60) return seconds + 's';
+    var minutes = Math.floor(seconds / 60);
+    seconds = seconds % 60;
+    if (minutes < 60) return minutes + 'm ' + seconds + 's';
+    var hours = Math.floor(minutes / 60);
+    return hours + 'h ' + (minutes % 60) + 'm';
+  }
+
+  function cpGetCharactersBlock() {
+    try { return document.getElementById('rm_print_characters_block'); } catch (_) { return null; }
+  }
+
+  function cpHasCharacterRows(block) {
+    try { return !!(block && block.querySelector('.character_select,.group_select,.bogus_folder_select')); } catch (_) { return false; }
+  }
+
+  function cpEnsureCharacterProgressStyle() {
+    try {
+      if (document.getElementById('cocktail-plus-character-load-style')) return;
+      var style = document.createElement('style');
+      style.id = 'cocktail-plus-character-load-style';
+      style.textContent = [
+        '#cocktail-plus-character-load-progress{box-sizing:border-box;width:calc(100% - 12px);margin:8px 6px 10px;padding:12px;border:1px solid rgba(120,170,255,.35);border-radius:10px;background:linear-gradient(180deg,rgba(35,45,65,.96),rgba(22,28,40,.96));box-shadow:0 8px 24px rgba(0,0,0,.18);color:#e9f1ff;font-size:13px;line-height:1.45;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-title{font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-title:before{content:"";display:inline-block;width:8px;height:8px;border-radius:999px;background:#7ab6ff;box-shadow:0 0 10px #7ab6ff;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-message{opacity:.92;margin-bottom:8px;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-track{position:relative;overflow:hidden;height:8px;border-radius:999px;background:rgba(255,255,255,.12);}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-bar{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#69d2ff,#8f8cff);transition:width .18s ease;}',
+        '#cocktail-plus-character-load-progress.cp-indeterminate .cp-char-progress-bar{width:38%;animation:cpCharIndeterminate 1.2s ease-in-out infinite;}',
+        '#cocktail-plus-character-load-progress .cp-char-progress-meta{margin-top:8px;display:flex;flex-wrap:wrap;gap:8px 12px;opacity:.78;font-size:12px;}',
+        '#rm_print_characters_block.cp-character-loading .empty_block{display:none!important;}',
+        '@keyframes cpCharIndeterminate{0%{transform:translateX(-110%)}50%{transform:translateX(60%)}100%{transform:translateX(260%)}}'
+      ].join('');
+      (document.head || document.documentElement).appendChild(style);
+    } catch (_) {}
+  }
+
+  function cpEnsureCharacterProgressElement() {
+    var block = cpGetCharactersBlock();
+    if (!block || cpHasCharacterRows(block)) return null;
+    cpEnsureCharacterProgressStyle();
+    block.classList.add('cp-character-loading');
+    var el = document.getElementById('cocktail-plus-character-load-progress');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'cocktail-plus-character-load-progress';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.innerHTML = '<div class="cp-char-progress-title">\u9E21\u5C3E\u9152+ \u6B63\u5728\u52A0\u8F7D\u89D2\u8272\u5217\u8868</div><div class="cp-char-progress-message"></div><div class="cp-char-progress-track"><div class="cp-char-progress-bar"></div></div><div class="cp-char-progress-meta"></div>';
+    }
+    if (el.parentNode !== block) block.insertBefore(el, block.firstChild || null);
+    return el;
+  }
+
+  function cpProgressMessage(data) {
+    if (data && data.message) return data.message;
+    var cache = String(data && data.cache || '');
+    var phase = String(data && data.phase || '');
+    if (cache === 'ASYNC-MISS') return '\u540E\u7AEF\u6B63\u5728\u6784\u5EFA\u89D2\u8272\u7F13\u5B58\uFF0C\u9996\u6B21\u52A0\u8F7D\u53EF\u80FD\u8F83\u4E45\u2026';
+    if (phase === 'requesting' || phase === 'starting') return '\u7B49\u5F85 SillyTavern \u539F\u59CB\u63A5\u53E3\u8FD4\u56DE\u89D2\u8272\u5217\u8868\u2026';
+    if (phase === 'downloading') return '\u6B63\u5728\u4E0B\u8F7D\u89D2\u8272\u5217\u8868\u6570\u636E\u2026';
+    if (phase === 'transforming') return '\u6B63\u5728\u6574\u7406\u89D2\u8272\u7F13\u5B58\u2026';
+    if (phase === 'cached') return '\u7F13\u5B58\u5DF2\u5C31\u7EEA\uFF0C\u6B63\u5728\u5237\u65B0\u89D2\u8272\u5217\u8868\u2026';
+    if (phase === 'rendering') return '\u89D2\u8272\u6570\u636E\u5DF2\u8FD4\u56DE\uFF0C\u6B63\u5728\u89E3\u6790\u5E76\u6E32\u67D3\u5217\u8868\u2026';
+    if (phase === 'error') return '\u89D2\u8272\u5217\u8868\u52A0\u8F7D\u9047\u5230\u95EE\u9898\uFF0C\u6B63\u5728\u56DE\u9000/\u7B49\u5F85\u91CD\u8BD5\u2026';
+    return '\u6B63\u5728\u52A0\u8F7D\u89D2\u8272\u5217\u8868\u2026';
+  }
+
+  function cpRenderCharacterProgress() {
+    try {
+      var data = state.charactersLoad || {};
+      if (!data.active) return;
+      var block = cpGetCharactersBlock();
+      if (cpHasCharacterRows(block)) { cpRemoveCharacterProgress(); return; }
+      var el = cpEnsureCharacterProgressElement();
+      if (!el) return;
+      var percent = cpClampPercent(data.percent);
+      var determinate = percent !== null;
+      el.classList.toggle('cp-indeterminate', !determinate);
+      var bar = el.querySelector('.cp-char-progress-bar');
+      if (bar && determinate) bar.style.width = percent.toFixed(1) + '%';
+      var msg = el.querySelector('.cp-char-progress-message');
+      if (msg) msg.textContent = cpProgressMessage(data);
+      var parts = [];
+      var received = Math.max(0, cpNumber(data.bytesReceived, 0) || 0);
+      var total = cpNumber(data.totalBytes, null);
+      if (total && total > 0) parts.push('\u5DF2\u63A5\u6536 ' + cpFormatBytes(received) + ' / ' + cpFormatBytes(total));
+      else if (received > 0) parts.push('\u5DF2\u63A5\u6536 ' + cpFormatBytes(received));
+      if (determinate) parts.push(percent.toFixed(1) + '%');
+      if ((cpNumber(data.speedBps, 0) || 0) > 0) parts.push(cpFormatBytes(data.speedBps) + '/s');
+      if (cpNumber(data.etaMs, null) !== null && (cpNumber(data.etaMs, 0) || 0) > 0) parts.push('\u5269\u4F59 ' + cpFormatDuration(data.etaMs));
+      else if (data.startedAt) parts.push('\u5DF2\u7528 ' + cpFormatDuration(Date.now() - data.startedAt));
+      if (data.cache) parts.push('\u7F13\u5B58\u72B6\u6001 ' + data.cache);
+      if (data.phase) parts.push('\u9636\u6BB5 ' + data.phase);
+      if (data.error) parts.push('\u9519\u8BEF ' + data.error);
+      var meta = el.querySelector('.cp-char-progress-meta');
+      if (meta) meta.textContent = parts.join(' \xB7 ');
+    } catch (error) {
+      remember('characters.progress.render-error', { error: String(error && error.message || error) });
+    }
+  }
+
+  function cpStartCharacterRenderTimer() {
+    if (characterProgressRenderTimer) return;
+    characterProgressRenderTimer = setInterval(function () {
+      if (!state.charactersLoad || !state.charactersLoad.active) { clearInterval(characterProgressRenderTimer); characterProgressRenderTimer = null; return; }
+      cpRenderCharacterProgress();
+    }, 500);
+  }
+
+  function cpUpdateCharacterProgress(patch) {
+    var now = Date.now();
+    var previous = state.charactersLoad || {};
+    var next = Object.assign({}, previous, patch || {});
+    next.active = patch && patch.active !== undefined ? !!patch.active : true;
+    next.startedAt = next.startedAt || now;
+    next.updatedAt = now;
+    next.bytesReceived = Math.max(0, cpNumber(next.bytesReceived, 0) || 0);
+    next.totalBytes = cpNumber(next.totalBytes, null);
+    if (!(next.totalBytes > 0)) next.totalBytes = null;
+    next.speedBps = Math.max(0, cpNumber(next.speedBps, 0) || 0);
+    next.percent = cpClampPercent(next.percent);
+    next.etaMs = cpNumber(next.etaMs, null);
+    state.charactersLoad = next;
+    cpStartCharacterRenderTimer();
+    try { window.dispatchEvent(new CustomEvent('cocktail-plus:characters-progress', { detail: Object.assign({}, next) })); } catch (_) {}
+    cpRenderCharacterProgress();
+    return next;
+  }
+
+  function cpRemoveCharacterProgress() {
+    try {
+      if (characterProgressStatusTimer) { clearTimeout(characterProgressStatusTimer); characterProgressStatusTimer = null; }
+      if (characterProgressRowTimer) { clearInterval(characterProgressRowTimer); characterProgressRowTimer = null; }
+      state.charactersLoad.active = false;
+      var block = cpGetCharactersBlock();
+      if (block) block.classList.remove('cp-character-loading');
+      var el = document.getElementById('cocktail-plus-character-load-progress');
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    } catch (_) {}
+  }
+
+  function cpWaitRowsThenRemove(maxMs) {
+    if (characterProgressRowTimer) clearInterval(characterProgressRowTimer);
+    var started = Date.now();
+    characterProgressRowTimer = setInterval(function () {
+      if (cpHasCharacterRows(cpGetCharactersBlock()) || Date.now() - started > Math.max(1000, maxMs || 20000)) {
+        clearInterval(characterProgressRowTimer);
+        characterProgressRowTimer = null;
+        cpRemoveCharacterProgress();
+      }
+    }, 500);
+  }
+
+  function cpFinishCharacterProgress(reason, delayMs) {
+    if (reason) cpUpdateCharacterProgress({ phase: reason === 'rendered' ? 'rendered' : 'cached', message: reason === 'rendered' ? '\u89D2\u8272\u5217\u8868\u5DF2\u663E\u793A' : '\u7F13\u5B58\u5DF2\u5C31\u7EEA\uFF0C\u6B63\u5728\u5237\u65B0\u89D2\u8272\u5217\u8868\u2026', percent: 100, etaMs: 0 });
+    if (characterProgressStatusTimer) { clearTimeout(characterProgressStatusTimer); characterProgressStatusTimer = null; }
+    setTimeout(function () { cpWaitRowsThenRemove(15000); }, Math.max(0, delayMs || 0));
+  }
+
+  function cpStartCharacterStatusPolling(rawFetch, sourceHeaders) {
+    if (characterProgressStatusTimer) clearTimeout(characterProgressStatusTimer);
+    var started = Date.now();
+    var poll = async function () {
+      try {
+        if (!state.charactersLoad || !state.charactersLoad.active) return;
+        var headers = new Headers();
+        try {
+          var token = sourceHeaders && sourceHeaders.get && sourceHeaders.get('x-csrf-token');
+          if (token) headers.set('x-csrf-token', token);
+          var auth = sourceHeaders && sourceHeaders.get && sourceHeaders.get('authorization');
+          if (auth) headers.set('authorization', auth);
+        } catch (_) {}
+        if (settingsGetCsrfToken && !headers.has('x-csrf-token')) headers.set('x-csrf-token', settingsGetCsrfToken);
+        headers.set('content-type', 'application/json');
+        headers.set(HEADER_PREFIX + '-early', VERSION);
+        var response = await rawFetch(PREFIX + '/status', { method: 'POST', headers: headers, credentials: 'same-origin', cache: 'no-store', redirect: 'manual', body: '{}' });
+        if (response && response.ok) {
+          var data = await response.json();
+          var rows = Array.isArray(data && data.status) ? data.status : [];
+          var row = rows.find(function (item) { return item && item.endpointKey === 'characters-all'; });
+          if (row && row.progress) cpUpdateCharacterProgress(Object.assign({ cache: 'ASYNC-MISS' }, row.progress));
+          else cpUpdateCharacterProgress({ cache: 'ASYNC-MISS', phase: row && row.refreshing ? 'requesting' : 'starting' });
+          if (row && row.entry && !row.refreshing) { cpFinishCharacterProgress('cached', 1200); return; }
+        }
+      } catch (error) {
+        cpUpdateCharacterProgress({ phase: 'requesting', error: String(error && error.message || error) });
+      }
+      if (Date.now() - started > 5 * 60 * 1000) { cpUpdateCharacterProgress({ phase: 'error', error: 'status polling timeout' }); return; }
+      characterProgressStatusTimer = setTimeout(poll, 700);
+    };
+    characterProgressStatusTimer = setTimeout(poll, 300);
+  }
+
+  state.updateCharactersLoadProgress = cpUpdateCharacterProgress;
+  state.finishCharactersLoadProgress = cpFinishCharacterProgress;
+
+
+  function cpEndpointsToInvalidate(pathname) {
+    var out = [];
+    if (String(pathname || '').startsWith('/api/characters/') && pathname !== '/api/characters/all' && pathname !== '/api/characters/get' && pathname !== '/api/characters/chats' && pathname !== '/api/characters/export') out.push('characters-all');
+    if (pathname === '/api/chats/save' || pathname === '/api/chats/group/save' || pathname === '/api/chats/delete' || pathname === '/api/chats/group/delete' || pathname === '/api/chats/import' || pathname === '/api/chats/group/import') out.push('characters-all');
+    return out.filter(function (item, index) { return item && out.indexOf(item) === index; });
+  }
+
+  async function cpNotifyInvalidate(rawFetch, input, init, endpoints, reason) {
+    try {
+      if (!rawFetch || !endpoints || !endpoints.length) return;
+      var headers = cloneHeaders(input, init);
+      headers.set('content-type', 'application/json');
+      await rawFetch(PREFIX + '/invalidate', {
+        method: 'POST',
+        headers: headers,
+        credentials: (init && init.credentials) || 'same-origin',
+        cache: 'no-store',
+        redirect: 'manual',
+        body: JSON.stringify({ endpoints: endpoints, reason: reason || '' })
+      });
+      remember('invalidate.done', { endpoints: endpoints, reason: reason || '' });
+    } catch (error) {
+      remember('invalidate.error', { endpoints: endpoints || [], reason: reason || '', error: String(error && error.message || error) });
+    }
+  }
+
+  async function cpFetchWithInvalidation(rawFetch, input, init, url, method) {
+    var endpoints = url && url.origin === location.origin && method === 'POST' ? cpEndpointsToInvalidate(url.pathname) : [];
+    if (!endpoints.length) return rawFetch(input, init);
+    var response = await rawFetch(input, init);
+    if (response && response.ok) {
+      await cpNotifyInvalidate(rawFetch, input, init, endpoints, url.pathname);
+    }
+    return response;
+  }
+
   var settingsBaseline = null;
   var chatSaveBaselines = new Map();
   var settingsGetPrefetch = null;
@@ -2919,6 +3326,7 @@ ${fastRoutes}
           state.chatSave.optimized += 1;
           state.chatSave.savedBytes += patch.savedBytes || 0;
           if (saveState !== 'NOOP-STALE') await updateChatBaseline(identity, body.chat, 'chat-save-' + patch.mode);
+          await cpNotifyInvalidate(rawFetch, input, init, ['characters-all'], url.pathname);
           remember('chat.save.optimized', { mode: patch.mode, kind: kind, status: fastResponse.status, state: saveState, savedBytes: patch.savedBytes || 0, durationMs: Date.now() - startedAt });
           return fastResponse;
         }
@@ -2930,7 +3338,10 @@ ${fastRoutes}
 
     var fallbackResponse = await rawFetch(input, init);
     state.chatSave.fallbacks += 1;
-    if (fallbackResponse && fallbackResponse.ok) await updateChatBaseline(identity, body.chat, patch ? 'chat-save-fallback' : 'chat-save-original');
+    if (fallbackResponse && fallbackResponse.ok) {
+      await updateChatBaseline(identity, body.chat, patch ? 'chat-save-fallback' : 'chat-save-original');
+      await cpNotifyInvalidate(rawFetch, input, init, ['characters-all'], url.pathname);
+    }
     remember('chat.save.original', { kind: kind, status: fallbackResponse && fallbackResponse.status, optimized: false, durationMs: Date.now() - startedAt });
     return fallbackResponse;
   }
@@ -2976,6 +3387,7 @@ ${fastRoutes}
 
   async function callFast(rawFetch, input, init, route, url, method) {
     var startedAt = Date.now();
+    var isCharactersAll = url && url.pathname === '/api/characters/all';
     if (method === 'GET') {
       var prefetched = fastGetPrefetches.get(url.pathname);
       if (prefetched && prefetched.promise) {
@@ -2992,6 +3404,10 @@ ${fastRoutes}
     var body = await getBody(input, init, method);
     if (method !== 'GET' && method !== 'HEAD' && !headers.has('content-type')) headers.set('content-type', 'application/json');
 
+    if (isCharactersAll) {
+      cpUpdateCharacterProgress({ active: true, phase: 'requesting', cache: '', message: '\u6B63\u5728\u52A0\u8F7D\u89D2\u8272\u5217\u8868\u2026', bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, error: null, startedAt: startedAt });
+      cpStartCharacterStatusPolling(rawFetch, headers);
+    }
     remember('intercept.start', { path: url.pathname, fastPath: route.path, method: method });
     try {
       var fastInit = {
@@ -3005,11 +3421,20 @@ ${fastRoutes}
       var response = await rawFetch(route.path, fastInit);
       if (response && response.status !== 404 && response.status !== 503) {
         var cacheState = response.headers.get(HEADER_PREFIX + '-state') || response.headers.get('x-cocktail-cache') || '';
+        if (isCharactersAll) {
+          cpUpdateCharacterProgress({ phase: cacheState === 'ASYNC-MISS' ? 'requesting' : 'rendering', cache: cacheState, status: response.status, percent: cacheState === 'ASYNC-MISS' ? null : 100, etaMs: 0, message: cacheState === 'ASYNC-MISS' ? '\u540E\u7AEF\u6B63\u5728\u6784\u5EFA\u89D2\u8272\u7F13\u5B58\uFF0C\u9996\u6B21\u52A0\u8F7D\u53EF\u80FD\u8F83\u4E45\u2026' : '\u89D2\u8272\u6570\u636E\u5DF2\u8FD4\u56DE\uFF0C\u6B63\u5728\u89E3\u6790\u5E76\u6E32\u67D3\u5217\u8868\u2026' });
+          if (cacheState !== 'ASYNC-MISS') {
+            if (characterProgressStatusTimer) { clearTimeout(characterProgressStatusTimer); characterProgressStatusTimer = null; }
+            cpWaitRowsThenRemove(20000);
+          }
+        }
         remember('intercept.fast-response', { path: url.pathname, status: response.status, cache: cacheState, durationMs: Date.now() - startedAt });
         return response;
       }
+      if (isCharactersAll) cpUpdateCharacterProgress({ phase: 'requesting', message: '\u5FEB\u901F\u63A5\u53E3\u4E0D\u53EF\u7528\uFF0C\u56DE\u9000\u539F\u59CB\u89D2\u8272\u63A5\u53E3\u2026' });
       remember('intercept.fallback-status', { path: url.pathname, status: response && response.status, durationMs: Date.now() - startedAt });
     } catch (error) {
+      if (isCharactersAll) cpUpdateCharacterProgress({ phase: 'error', error: String(error && error.message || error), message: '\u5FEB\u901F\u63A5\u53E3\u8BF7\u6C42\u5931\u8D25\uFF0C\u6B63\u5728\u56DE\u9000\u539F\u59CB\u89D2\u8272\u63A5\u53E3\u2026' });
       remember('intercept.error', { path: url.pathname, error: String(error && error.message || error), durationMs: Date.now() - startedAt });
     }
     return null;
@@ -3071,7 +3496,7 @@ ${fastRoutes}
         var fastResponse = await callFast(rawFetch, input, init, route, url, method);
         if (fastResponse) return fastResponse;
       }
-      return rawFetch(input, init);
+      return await cpFetchWithInvalidation(rawFetch, input, init, url, method);
     };
     state.patchedFetch = true;
     remember('fetch.patched', { routes: Array.from(FAST_ROUTES.keys()), settingsGet: SETTINGS_GET.enabled, settingsSave: SETTINGS_SAVE.enabled, chatSave: CHAT_SAVE.enabled });
@@ -3142,15 +3567,19 @@ function defaultTransformBodyForCache(bodyText) {
 async function refreshEntry(ctx, endpointKey, reason = "refresh") {
   const endpoint = ENDPOINTS[endpointKey];
   const key = getCacheKey2(ctx, endpointKey);
+  const startedAt = Date.now();
+  const updateProgress = (patch = {}) => setRefreshProgress(key, endpointKey, patch);
   if (inflight.has(key)) {
     return await inflight.get(key);
   }
   const promise = (async () => {
     stats.refreshes++;
+    updateProgress({ phase: "starting", reason, startedAt, bytesReceived: 0, totalBytes: null, speedBps: 0, percent: null, etaMs: null, status: null, error: null });
     const signature = endpoint.getSignature(ctx);
-    const result = await fetchOriginal(ctx, endpoint);
+    const result = await fetchOriginal(ctx, endpoint, { onProgress: updateProgress });
     if (result.ok && result.status >= 200 && result.status < 300) {
       const now = Date.now();
+      updateProgress({ phase: "transforming", status: result.status, bytesReceived: result.bytesReceived ?? Buffer.byteLength(result.bodyText || "", "utf8"), totalBytes: result.totalBytes ?? null, etaMs: 0 });
       const transformed = endpoint.transformBodyForCache ? endpoint.transformBodyForCache(ctx, result.bodyText, config) : defaultTransformBodyForCache(result.bodyText);
       const entry = {
         endpointKey,
@@ -3175,12 +3604,18 @@ async function refreshEntry(ctx, endpointKey, reason = "refresh") {
       };
       memoryCache.set(key, entry);
       writeDiskEntry(ctx, endpointKey, entry);
+      updateProgress({ phase: "cached", status: result.status, bytesReceived: result.bytesReceived ?? Buffer.byteLength(result.bodyText || "", "utf8"), totalBytes: result.totalBytes ?? null, percent: result.totalBytes ? 100 : null, etaMs: 0, error: null });
+      scheduleClearRefreshProgress(key);
       return { result, entry, cached: true };
     }
+    updateProgress({ phase: "error", status: result.status, bytesReceived: result.bytesReceived ?? Buffer.byteLength(result.bodyText || "", "utf8"), totalBytes: result.totalBytes ?? null, error: `HTTP ${result.status || 0}` });
+    scheduleClearRefreshProgress(key);
     return { result, entry: null, cached: false };
   })().catch((error) => {
     stats.errors++;
     stats.lastError = error instanceof Error ? error.message : String(error);
+    updateProgress({ phase: "error", error: stats.lastError, status: null });
+    scheduleClearRefreshProgress(key);
     throw error;
   }).finally(() => inflight.delete(key));
   inflight.set(key, promise);
@@ -3256,12 +3691,12 @@ async function handleFast(req, res, endpointKey) {
       memoryCache.set(cacheKey, entry);
       return sendEntry(res, entry, "HIT");
     }
-    if (config.staleWhileRevalidate) {
+    if (config.staleWhileRevalidate && signatureMatches) {
       stats.staleHits++;
       entry.staleHitCount = Number(entry.staleHitCount || 0) + 1;
       memoryCache.set(cacheKey, entry);
-      const state = signatureMatches ? "STALE" : "STALE-SIGNATURE";
-      void refreshEntry(ctx, endpointKey, signatureMatches ? "max-stale-expired" : "signature-changed").catch(() => {
+      const state = "STALE";
+      void refreshEntry(ctx, endpointKey, "max-stale-expired").catch(() => {
       });
       return sendEntry(res, entry, state);
     }
@@ -3286,7 +3721,7 @@ async function handleFast(req, res, endpointKey) {
     });
     return sendEntry(res, fastEntry, fastMiss.state, fastMiss.extraResponseHeaders);
   }
-  const asyncMiss = endpoint.makeAsyncMiss?.(ctx, signature, config);
+  const asyncMiss = !entry ? endpoint.makeAsyncMiss?.(ctx, signature, config) : null;
   if (asyncMiss) {
     stats.misses++;
     if (asyncMiss.refreshReason) void refreshEntry(ctx, endpointKey, asyncMiss.refreshReason).catch(() => {
@@ -3704,6 +4139,12 @@ async function fetchFast(event, fastPath) {
         path: originalPath,
         cache: cacheState,
         status: response.status,
+        progress: originalPath === '/api/characters/all' ? {
+          cache: cacheState,
+          phase: cacheState === 'ASYNC-MISS' ? 'requesting' : 'downloading',
+          status: response.status,
+        } : null,
+        shouldPollStatus: originalPath === '/api/characters/all' && cacheState === 'ASYNC-MISS',
         durationMs: Date.now() - startedAt,
       });
       return response;
@@ -3898,6 +4339,15 @@ async function notifyInvalidate(request, endpoints, reason) {
   }
 }
 
+
+async function fetchAndInvalidate(request, endpoints, reason) {
+  const response = await fetch(request);
+  if (response && response.ok) {
+    await notifyInvalidate(request, endpoints, reason);
+  }
+  return response;
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
@@ -3940,7 +4390,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method === 'POST') {
     const endpoints = endpointsToInvalidate(pathname);
     if (endpoints.length) {
-      event.waitUntil(notifyInvalidate(request, endpoints, pathname));
+      event.respondWith(fetchAndInvalidate(request, endpoints, pathname));
+      return;
     }
   }
 });

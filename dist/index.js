@@ -168,6 +168,21 @@ let charactersRefreshScheduled = false;
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function getEarlyBridge() {
+  return globalThis.__cocktailPlusEarlyBridge;
+}
+function syncEarlyCharacterProgress(row) {
+  try {
+    const early = getEarlyBridge();
+    if (!(early == null ? void 0 : early.updateCharactersLoadProgress)) return;
+    if (row == null ? void 0 : row.progress) {
+      early.updateCharactersLoadProgress({ cache: "ASYNC-MISS", ...row.progress });
+    } else {
+      early.updateCharactersLoadProgress({ cache: "ASYNC-MISS", phase: (row == null ? void 0 : row.refreshing) ? "requesting" : "starting" });
+    }
+  } catch {
+  }
+}
 function markAppReady() {
   appReady = true;
 }
@@ -189,14 +204,19 @@ async function waitForAppReady() {
   });
 }
 async function waitForCharactersCacheReady(maxMs = 6e4) {
-  var _a;
+  var _a, _b, _c;
   const deadline = Date.now() + maxMs;
   while (Date.now() < deadline) {
     try {
       const status = await postJson(`${API_PREFIX}/status`, {});
       state.backend = { ...state.backend || { ok: true }, ...status };
       const row = (_a = status.status) == null ? void 0 : _a.find((x) => x.endpointKey === "characters-all");
+      syncEarlyCharacterProgress(row);
       if ((row == null ? void 0 : row.entry) && !row.refreshing) {
+        try {
+          (_c = (_b = getEarlyBridge()) == null ? void 0 : _b.finishCharactersLoadProgress) == null ? void 0 : _c.call(_b, "cached", 1200);
+        } catch {
+        }
         log("characters cache ready for async refresh", row.entry);
         return true;
       }
@@ -237,12 +257,31 @@ function scheduleCharactersRefreshAfterAsyncMiss(source) {
     log("characters async refresh failed", error instanceof Error ? error.message : String(error));
   });
 }
+function endpointsToInvalidate(pathname) {
+  const out = [];
+  if (pathname.startsWith("/api/characters/") && pathname !== "/api/characters/all" && pathname !== "/api/characters/get" && pathname !== "/api/characters/chats" && pathname !== "/api/characters/export") out.push("characters-all");
+  if (pathname === "/api/chats/save" || pathname === "/api/chats/group/save" || pathname === "/api/chats/delete" || pathname === "/api/chats/group/delete" || pathname === "/api/chats/import" || pathname === "/api/chats/group/import") out.push("characters-all");
+  return Array.from(new Set(out));
+}
+async function notifyInvalidate(baseFetch, endpoints, reason) {
+  if (!endpoints.length) return;
+  try {
+    await baseFetch(`${API_PREFIX}/invalidate`, {
+      method: "POST",
+      headers: getRequestHeaders(),
+      body: JSON.stringify({ endpoints, reason }),
+      cache: "no-store"
+    });
+  } catch (error) {
+    log("invalidate failed", error instanceof Error ? error.message : String(error));
+  }
+}
 function installFetchObserver() {
   if (globalThis[FETCH_OBSERVER_FLAG]) return;
   globalThis[FETCH_OBSERVER_FLAG] = true;
   const baseFetch = globalThis.fetch.bind(globalThis);
   globalThis.fetch = async (input, init2) => {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const pathname = (() => {
       try {
@@ -254,7 +293,10 @@ function installFetchObserver() {
     const watched = pathname === "/api/characters/all" || pathname === "/version" || pathname === "/api/settings/get" || pathname === "/api/settings/save" || pathname === "/api/chats/save" || pathname === "/api/chats/group/save";
     const startedAt = watched ? performance.now() : 0;
     if (watched) log("window.fetch target observed after extension load", { method: (init2 == null ? void 0 : init2.method) || (input instanceof Request ? input.method : "GET"), controller: ((_b = (_a = navigator.serviceWorker) == null ? void 0 : _a.controller) == null ? void 0 : _b.scriptURL) || "" });
+    const method = String((init2 == null ? void 0 : init2.method) || (input instanceof Request ? input.method : "GET")).toUpperCase();
+    const invalidates = method === "POST" ? endpointsToInvalidate(pathname) : [];
     const response = await baseFetch(input, init2);
+    if (response.ok && invalidates.length) await notifyInvalidate(baseFetch, invalidates, pathname);
     if (watched) {
       const cacheState = response.headers.get(`${HEADER_PREFIX}-state`) || response.headers.get("x-cocktail-cache") || "";
       response.headers.get(`${HEADER_PREFIX}-settings-get-state`) || "";
@@ -262,7 +304,17 @@ function installFetchObserver() {
       response.headers.get(`${HEADER_PREFIX}-chat-save-state`) || "";
       log("window.fetch target response after extension load", { status: response.status, durationMs: Math.round(performance.now() - startedAt) });
       if (pathname === "/api/characters/all" && cacheState === "ASYNC-MISS") {
+        try {
+          (_d = (_c = globalThis.__cocktailPlusEarlyBridge) == null ? void 0 : _c.updateCharactersLoadProgress) == null ? void 0 : _d.call(_c, { cache: "ASYNC-MISS", phase: "requesting", status: response.status });
+        } catch {
+        }
         scheduleCharactersRefreshAfterAsyncMiss();
+      } else if (pathname === "/api/characters/all" && cacheState) {
+        try {
+          (_f = (_e = globalThis.__cocktailPlusEarlyBridge) == null ? void 0 : _e.updateCharactersLoadProgress) == null ? void 0 : _f.call(_e, { cache: cacheState, phase: "downloading", status: response.status });
+          (_h = (_g = globalThis.__cocktailPlusEarlyBridge) == null ? void 0 : _g.finishCharactersLoadProgress) == null ? void 0 : _h.call(_g, "downloaded", 3e3);
+        } catch {
+        }
       }
     }
     return response;
@@ -1038,11 +1090,21 @@ async function init() {
   }
   void startAutoUpdateCheck(renderPanel);
   (_e = navigator.serviceWorker) == null ? void 0 : _e.addEventListener("message", (event) => {
+    var _a2, _b2, _c2, _d2;
     const data = event.data;
     if ((data == null ? void 0 : data.source) === SW_MESSAGE_SOURCE) {
       log(`SW: ${data.type || "message"}`);
       if (data.path === "/api/characters/all" && data.cache === "ASYNC-MISS") {
+        try {
+          (_b2 = (_a2 = globalThis.__cocktailPlusEarlyBridge) == null ? void 0 : _a2.updateCharactersLoadProgress) == null ? void 0 : _b2.call(_a2, { cache: "ASYNC-MISS", phase: "requesting", ...data.progress || {} });
+        } catch {
+        }
         scheduleCharactersRefreshAfterAsyncMiss();
+      } else if (data.path === "/api/characters/all" && data.progress) {
+        try {
+          (_d2 = (_c2 = globalThis.__cocktailPlusEarlyBridge) == null ? void 0 : _c2.updateCharactersLoadProgress) == null ? void 0 : _d2.call(_c2, data.progress);
+        } catch {
+        }
       }
     }
   });

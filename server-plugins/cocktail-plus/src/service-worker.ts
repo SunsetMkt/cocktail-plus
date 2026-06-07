@@ -407,6 +407,12 @@ async function fetchFast(event, fastPath) {
         path: originalPath,
         cache: cacheState,
         status: response.status,
+        progress: originalPath === '/api/characters/all' ? {
+          cache: cacheState,
+          phase: cacheState === 'ASYNC-MISS' ? 'requesting' : 'downloading',
+          status: response.status,
+        } : null,
+        shouldPollStatus: originalPath === '/api/characters/all' && cacheState === 'ASYNC-MISS',
         durationMs: Date.now() - startedAt,
       });
       return response;
@@ -601,6 +607,15 @@ async function notifyInvalidate(request, endpoints, reason) {
   }
 }
 
+
+async function fetchAndInvalidate(request, endpoints, reason) {
+  const response = await fetch(request);
+  if (response && response.ok) {
+    await notifyInvalidate(request, endpoints, reason);
+  }
+  return response;
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
@@ -643,7 +658,8 @@ self.addEventListener('fetch', (event) => {
   if (request.method === 'POST') {
     const endpoints = endpointsToInvalidate(pathname);
     if (endpoints.length) {
-      event.waitUntil(notifyInvalidate(request, endpoints, pathname));
+      event.respondWith(fetchAndInvalidate(request, endpoints, pathname));
+      return;
     }
   }
 });

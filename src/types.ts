@@ -14,6 +14,23 @@ export type EarlyBridgeStatus = {
   backupDir: string;
 };
 
+export type RefreshProgress = {
+  endpointKey: CacheEndpoint | string | null;
+  reason: string | null;
+  phase: 'starting' | 'requesting' | 'downloading' | 'transforming' | 'cached' | 'error' | string;
+  startedAt: number;
+  updatedAt: number;
+  elapsedMs: number;
+  ageMs: number;
+  bytesReceived: number;
+  totalBytes: number | null;
+  speedBps: number;
+  percent: number | null;
+  etaMs: number | null;
+  status: number | null;
+  error: string | null;
+};
+
 export type CacheEntrySummary = {
   endpointKey: CacheEndpoint;
   entry: null | {
@@ -30,6 +47,7 @@ export type CacheEntrySummary = {
     lastError: string | null;
   };
   refreshing?: boolean;
+  progress?: RefreshProgress | null;
 };
 
 export type SettingsSaveStatus = {
