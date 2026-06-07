@@ -738,8 +738,8 @@ start_backend_update_check() {
       fi
       exit 0
     done <<'EOF'
-GitHub|https://raw.githubusercontent.com/Lianues/cocktail-plus/main/manifest.json
-Gitee|https://gitee.com/lianues/cocktail-plus/raw/main/manifest.json
+GitHub|https://raw.githubusercontent.com/Lianues/cocktail-plus/main/server-plugins/cocktail-plus/version.json
+Gitee|https://gitee.com/lianues/cocktail-plus/raw/main/server-plugins/cocktail-plus/version.json
 EOF
   ) >/dev/null 2>&1 &
   BACKEND_UPDATE_CHECK_PID="$!"
@@ -823,8 +823,7 @@ update_backend_from_repository() {
   current="$(read_backend_version "$target" 2>/dev/null || true)"
   tmp="${TMPDIR:-/tmp}/cocktail-plus-repo-$(date +%Y%m%d_%H%M%S)"
   source="$(clone_cocktail_plus_repo "$tmp")" || { rm -rf "$tmp"; say_warn 'GitHub/Gitee 仓库下载均失败。'; return 1; }
-  remote_version="$(read_manifest_version "$tmp/manifest.json" 2>/dev/null || true)"
-  [ -n "$remote_version" ] || remote_version="$(read_backend_version "$source" 2>/dev/null || true)"
+  remote_version="$(read_backend_version "$source" 2>/dev/null || true)"
   if [ ! -f "$source/version.json" ] && [ -n "$remote_version" ]; then
     node - "$source/version.json" "$remote_version" <<'NODE' 2>/dev/null || true
 const fs = require('fs');

@@ -629,8 +629,8 @@ function Compare-VersionString([string]$A, [string]$B) {
 
 function Get-RemoteCocktailPlusInfo([switch]$Quiet) {
     $sources = @(
-        [pscustomobject]@{ Name='GitHub'; Manifest='https://raw.githubusercontent.com/Lianues/cocktail-plus/main/manifest.json'; Repo='https://github.com/Lianues/cocktail-plus.git' },
-        [pscustomobject]@{ Name='Gitee'; Manifest='https://gitee.com/lianues/cocktail-plus/raw/main/manifest.json'; Repo='https://gitee.com/lianues/cocktail-plus.git' }
+        [pscustomobject]@{ Name='GitHub'; Manifest='https://raw.githubusercontent.com/Lianues/cocktail-plus/main/server-plugins/cocktail-plus/version.json'; Repo='https://github.com/Lianues/cocktail-plus.git' },
+        [pscustomobject]@{ Name='Gitee'; Manifest='https://gitee.com/lianues/cocktail-plus/raw/main/server-plugins/cocktail-plus/version.json'; Repo='https://gitee.com/lianues/cocktail-plus.git' }
     )
     foreach ($source in $sources) {
         try {
@@ -644,7 +644,7 @@ function Get-RemoteCocktailPlusInfo([switch]$Quiet) {
             if (-not $Quiet) { Write-Warn "$($source.Name) 检查失败：$($_.Exception.Message)" }
         }
     }
-    throw '无法从 GitHub/Gitee 获取 cocktail-plus 远端版本。'
+    throw '无法从 GitHub/Gitee 获取 cocktail-plus 后端远端版本。'
 }
 
 function Get-HelperBundledBackendDir {
@@ -721,8 +721,8 @@ function Start-BackendUpdateCheck {
             }
 
             $sources = @(
-                [pscustomobject]@{ Name='GitHub'; Manifest='https://raw.githubusercontent.com/Lianues/cocktail-plus/main/manifest.json' },
-                [pscustomobject]@{ Name='Gitee'; Manifest='https://gitee.com/lianues/cocktail-plus/raw/main/manifest.json' }
+                [pscustomobject]@{ Name='GitHub'; Manifest='https://raw.githubusercontent.com/Lianues/cocktail-plus/main/server-plugins/cocktail-plus/version.json' },
+                [pscustomobject]@{ Name='Gitee'; Manifest='https://gitee.com/lianues/cocktail-plus/raw/main/server-plugins/cocktail-plus/version.json' }
             )
             foreach ($source in $sources) {
                 try {
