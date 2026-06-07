@@ -475,6 +475,7 @@ install_backend_plugin() {
 }
 
 restore_cocktail_plus_index_html() {
+  local no_backup="${1:-}"
   ensure_config_selected || return 1
   local index_path="$SELECTED_ROOT/public/index.html"
   if [ ! -f "$index_path" ]; then
@@ -497,13 +498,26 @@ const markerEnd = '<!-- cocktail-plus early bridge end -->';
 function escRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 let html = fs.readFileSync(indexPath, 'utf8');
 const originalHtml = html;
-html = html.replace(new RegExp(escRegExp(markerStart) + '[\\s\\S]*?' + escRegExp(markerEnd) + '\\s*', 'g'), '');
+html = html.replace(new RegExp('\\s*' + escRegExp(markerStart) + '[\\s\\S]*?' + escRegExp(markerEnd) + '\\s*', 'g'), '\n');
 html = html.replace(/<script\b[^>]*\bid=["']cocktail-plus-module-import-map["'][\s\S]*?<\/script>\s*/gi, '');
 html = html.replace(/<script\b[^>]*\bid=["']cocktail-plus-early-bridge["'][\s\S]*?<\/script>\s*/gi, '');
-html = html.replace(/<script\b(?=[^>]*\bdata-cp-module-proxy-original=(["'])(?<orig>[^"']+)\1)[^>]*>[\s\S]*?<\/script>/gi, (tag, _q, orig) => {
-  let restored = tag.replace(/\bsrc\s*=\s*(["'])(?:(?!\1)[\s\S])*?\1/i, () => `src="${orig}"`);
-  restored = restored.replace(/\s*data-cp-module-proxy-original=(["'])(?:(?!\1)[\s\S])*?\1/i, '');
-  return restored;
+html = html.replace(/^(?<indent>[ \t]*)<script\b[^>]*\bdata-cp-module-proxy-original=["'](?<orig>[^"']+)["'][^>]*>\s*<\/script>[ \t]*(?:\r?\n)?/gim, (match, _indentArg, _origArg, _offset, _str, groups) => {
+  const indent = groups?.indent || '';
+  const orig = String(groups?.orig || '').replace(/^\//, '');
+  return `${indent}<script type="module" src="${orig}"></script>\n`;
+});
+const hasScriptJs = /<script\b(?=[^>]*\btype=["']module["'])(?=[^>]*\bsrc=["']\/?script\.js["'])[^>]*>\s*<\/script>/i.test(html);
+if (!hasScriptJs) {
+  html = html.replace(/^(?<indent>[ \t]*)<script\b(?=[^>]*\btype=["']module["'])(?=[^>]*\bsrc=["']scripts\/i18n\.js["'])[^>]*>\s*<\/script>[ \t]*(?:\r?\n)?/im, (match, _indentArg, _offset, _str, groups) => {
+    const indent = groups?.indent || '';
+    return `${match.trimEnd()}\n${indent}<script type="module" src="script.js"></script>\n`;
+  });
+}
+let seenScriptJs = false;
+html = html.replace(/^(?<line>[ \t]*<script\b(?=[^>]*\btype=["']module["'])(?=[^>]*\bsrc=["']\/?script\.js["'])[^>]*>\s*<\/script>)\s*$/gim, (match, _lineArg, _offset, _str, groups) => {
+  if (seenScriptJs) return '';
+  seenScriptJs = true;
+  return groups?.line || match;
 });
 html = html.replace(/\n{3,}/g, '\n\n');
 if (html === originalHtml) process.exit(2);
@@ -521,11 +535,20 @@ NODE
     return 1
   fi
 
-  local backup
-  backup="$(backup_file "$index_path")"
+  local backup=""
+  if [ "$no_backup" != "--no-backup" ]; then
+    backup="$(backup_file "$index_path")"
+  fi
   mv "$tmp" "$index_path"
   [ -n "$backup" ] && printf '已备份 index.html：%s\n' "$backup"
   say_ok 'index.html 已恢复，cocktail-plus Early Bridge 注入已移除。'
+}
+
+repair_backend_uninstall_black_screen() {
+  ensure_config_selected || return 1
+  say_title '修复卸载后端扩展后启动立马黑屏问题'
+  restore_cocktail_plus_index_html --no-backup
+  say_ok '已直接修复 index.html：移除 Early Bridge 注入，并恢复 i18n.js/script.js module 脚本。'
 }
 
 
@@ -1103,24 +1126,25 @@ show_menu() {
   printf '\n'
   printf '如果需要卸载，则输入4\n'
   printf '\n'
-  printf '如果需要修改配置，则输入7\n'
+  printf '如果需要修改配置，则输入8\n'
   printf '\n'
-  printf '重启酒馆本体，输入8\n'
+  printf '重启酒馆本体，输入9\n'
   printf '\n'
   printf '后端扩展和前端扩展更新是独立的，需要分别进行更新\n'
-  printf '后端扩展更新输入9，前端扩展更新在酒馆网页进行更新\n'
+  printf '后端扩展更新输入10，前端扩展更新在酒馆网页进行更新\n'
   show_backend_update_notice
   printf '\n'
   printf '[1] 自动探测 SillyTavern/config.yaml（酒馆配置文件）\n'
   printf '[2] 手动输入 SillyTavern/config.yaml（酒馆配置文件）路径\n'
   printf '[3] 安装/重新安装 cocktail-plus 后端扩展，会自动开启酒馆使用后端扩展权限\n'
   printf '[4] 卸载 cocktail-plus 后端扩展（恢复 index.html）\n'
-  printf '[5] 允许酒馆使用后端扩展\n'
-  printf '[6] 禁止酒馆使用后端扩展\n'
-  printf '[7] 修改 cocktail-plus 后端插件配置项\n'
-  printf '[8] 重启 SillyTavern 酒馆本体\n'
-  printf '[9] 更新 cocktail-plus 后端扩展版本\n'
-  printf '[10] 显示当前选择\n'
+  printf '[5] 修复卸载后端扩展后启动立马黑屏问题\n'
+  printf '[6] 允许酒馆使用后端扩展\n'
+  printf '[7] 禁止酒馆使用后端扩展\n'
+  printf '[8] 修改 cocktail-plus 后端插件配置项\n'
+  printf '[9] 重启 SillyTavern 酒馆本体\n'
+  printf '[10] 更新 cocktail-plus 后端扩展版本\n'
+  printf '[11] 显示当前选择\n'
   printf '[0] 退出\n'
 }
 
@@ -1134,17 +1158,18 @@ while true; do
     2) manual_config_input ;;
     3) install_backend_plugin ;;
     4) remove_backend_plugin ;;
-    5) ensure_config_selected && set_config_bool "$SELECTED_CONFIG" enableServerPlugins true && say_warn '请重启 SillyTavern 后生效。' ;;
-    6)
+    5) repair_backend_uninstall_black_screen ;;
+    6) ensure_config_selected && set_config_bool "$SELECTED_CONFIG" enableServerPlugins true && say_warn '请重启 SillyTavern 后生效。' ;;
+    7)
       ensure_config_selected || continue
       say_warn '注意：这会禁用所有 SillyTavern Server Plugins，不只是 cocktail-plus。'
       read -r -p '确认关闭？(y/N) ' confirm
       if [[ "$confirm" =~ ^[Yy] ]]; then set_config_bool "$SELECTED_CONFIG" enableServerPlugins false; say_warn '请重启 SillyTavern 后生效。'; fi
       ;;
-    7) maintain_backend_config ;;
-    8) restart_sillytavern ;;
-    9) update_backend_from_repository ;;
-    10) show_current_selection ;;
+    8) maintain_backend_config ;;
+    9) restart_sillytavern ;;
+    10) update_backend_from_repository ;;
+    11) show_current_selection ;;
     0) break ;;
     *) say_warn '无效选项。' ;;
   esac

@@ -321,6 +321,9 @@ function Install-BackendPlugin {
 }
 
 function Restore-CocktailPlusIndexHtml {
+    param(
+        [switch]$NoBackup
+    )
     Ensure-ConfigSelected
     $indexPath = Join-Path $Script:SelectedRoot 'public\index.html'
     if (-not (Test-Path -LiteralPath $indexPath -PathType Leaf)) {
@@ -342,20 +345,35 @@ function Restore-CocktailPlusIndexHtml {
     $next = [regex]::Replace($next, '<script\b[^>]*\bid=["'']cocktail-plus-early-bridge["''][\s\S]*?</script>\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
     # Restore module proxy tags back to their original src.
-    $scriptRegex = '<script\b(?=[^>]*\bdata-cp-module-proxy-original=(["''])(?<orig>[^"'']+)\1)[^>]*>[\s\S]*?</script>'
+    $scriptRegex = '(?im)^(?<indent>[ \t]*)<script\b[^>]*\bdata-cp-module-proxy-original=["''](?<orig>[^"'']+)["''][^>]*>\s*</script>[ \t]*(?:\r?\n)?'
     $next = [regex]::Replace($next, $scriptRegex, {
         param($match)
-        $tag = $match.Value
+        $indent = $match.Groups['indent'].Value
         $orig = $match.Groups['orig'].Value
-        if ($tag -match '\bsrc\s*=\s*"[^"]*"') {
-            $tag = [regex]::Replace($tag, '\bsrc\s*=\s*"[^"]*"', "src=`"$orig`"", 1)
-        } elseif ($tag -match "\bsrc\s*=\s*'[^']*'") {
-            $tag = [regex]::Replace($tag, "\bsrc\s*=\s*'[^']*'", "src=`"$orig`"", 1)
-        }
-        $tag = [regex]::Replace($tag, '\s*data-cp-module-proxy-original="[^"]*"', '', 1)
-        $tag = [regex]::Replace($tag, "\s*data-cp-module-proxy-original='[^']*'", '', 1)
-        return $tag
+        return "$indent<script type=`"module`" src=`"$orig`"></script>`r`n"
     }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
+    # If script.js is missing after restoring i18n.js, insert it back.
+    $hasScriptJs = [regex]::IsMatch($next, '<script\b(?=[^>]*\btype=["'']module["''])(?=[^>]*\bsrc=["'']/?script\.js["''])[^>]*>\s*</script>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $hasScriptJs) {
+        $i18nRegex = '(?im)^(?<indent>[ \t]*)<script\b(?=[^>]*\btype=["'']module["''])(?=[^>]*\bsrc=["'']scripts/i18n\.js["''])[^>]*>\s*</script>[ \t]*(?:\r?\n)?'
+        $next = [regex]::Replace($next, $i18nRegex, {
+            param($match)
+            $indent = $match.Groups['indent'].Value
+            return $match.Value.TrimEnd() + "`r`n$indent<script type=`"module`" src=`"script.js`"></script>`r`n"
+        }, 1)
+    }
+
+    # Remove duplicate script.js module tags, keeping the first one.
+    $scriptJsLineRegex = '(?im)^(?<line>[ \t]*<script\b(?=[^>]*\btype=["'']module["''])(?=[^>]*\bsrc=["'']/?script\.js["''])[^>]*>\s*</script>)\s*$'
+    $script:cpSeenScriptJsForRepair = $false
+    $next = [regex]::Replace($next, $scriptJsLineRegex, {
+        param($match)
+        if ($script:cpSeenScriptJsForRepair) { return '' }
+        $script:cpSeenScriptJsForRepair = $true
+        return $match.Groups['line'].Value
+    })
+    Remove-Variable -Name cpSeenScriptJsForRepair -Scope Script -ErrorAction SilentlyContinue
 
     $next = [regex]::Replace($next, "\n{3,}", "`n`n")
     if ($next -eq $html) {
@@ -363,10 +381,18 @@ function Restore-CocktailPlusIndexHtml {
         return
     }
 
-    $backup = Backup-File $indexPath
+    $backup = $null
+    if (-not $NoBackup) { $backup = Backup-File $indexPath }
     Set-Content -LiteralPath $indexPath -Value $next -Encoding UTF8
     if ($backup) { Write-Host "已备份 index.html：$backup" }
     Write-Ok 'index.html 已恢复，cocktail-plus Early Bridge 注入已移除。'
+}
+
+function Repair-BackendUninstallBlackScreen {
+    Ensure-ConfigSelected
+    Write-Title '修复卸载后端扩展后启动立马黑屏问题'
+    Restore-CocktailPlusIndexHtml -NoBackup
+    Write-Ok '已直接修复 index.html：移除 Early Bridge 注入，并恢复 i18n.js/script.js module 脚本。'
 }
 
 
@@ -966,24 +992,25 @@ function Show-Menu {
     Write-Host ''
     Write-Host '如果需要卸载，则输入4'
     Write-Host ''
-    Write-Host '如果需要修改配置，则输入7'
+    Write-Host '如果需要修改配置，则输入8'
     Write-Host ''
-    Write-Host '重启酒馆本体，输入8'
+    Write-Host '重启酒馆本体，输入9'
     Write-Host ''
     Write-Host '后端扩展和前端扩展更新是独立的，需要分别进行更新'
-    Write-Host '后端扩展更新输入9，前端扩展更新在酒馆网页进行更新'
+    Write-Host '后端扩展更新输入10，前端扩展更新在酒馆网页进行更新'
     Show-BackendUpdateNotice
     Write-Host ''
     Write-Host '[1] 自动探测 SillyTavern/config.yaml（酒馆配置文件）'
     Write-Host '[2] 手动输入 SillyTavern/config.yaml（酒馆配置文件）路径'
     Write-Host '[3] 安装/重新安装 cocktail-plus 后端扩展，会自动开启酒馆使用后端扩展权限'
     Write-Host '[4] 卸载 cocktail-plus 后端扩展（恢复 index.html）'
-    Write-Host '[5] 允许酒馆使用后端扩展'
-    Write-Host '[6] 禁止酒馆使用后端扩展'
-    Write-Host '[7] 修改 cocktail-plus 后端插件配置项'
-    Write-Host '[8] 重启 SillyTavern 酒馆本体'
-    Write-Host '[9] 更新 cocktail-plus 后端扩展版本'
-    Write-Host '[10] 显示当前选择'
+    Write-Host '[5] 修复卸载后端扩展后启动立马黑屏问题'
+    Write-Host '[6] 允许酒馆使用后端扩展'
+    Write-Host '[7] 禁止酒馆使用后端扩展'
+    Write-Host '[8] 修改 cocktail-plus 后端插件配置项'
+    Write-Host '[9] 重启 SillyTavern 酒馆本体'
+    Write-Host '[10] 更新 cocktail-plus 后端扩展版本'
+    Write-Host '[11] 显示当前选择'
     Write-Host '[0] 退出'
 }
 
@@ -998,17 +1025,18 @@ while ($true) {
             '2' { Invoke-ManualConfigInput }
             '3' { Install-BackendPlugin }
             '4' { Remove-BackendPlugin }
-            '5' { Ensure-ConfigSelected; Set-ConfigBool $Script:SelectedConfigPath 'enableServerPlugins' $true; Write-Warn '请重启 SillyTavern 后生效。' }
-            '6' {
+            '5' { Repair-BackendUninstallBlackScreen }
+            '6' { Ensure-ConfigSelected; Set-ConfigBool $Script:SelectedConfigPath 'enableServerPlugins' $true; Write-Warn '请重启 SillyTavern 后生效。' }
+            '7' {
                 Ensure-ConfigSelected
                 Write-Warn '注意：这会禁用所有 SillyTavern Server Plugins，不只是 cocktail-plus。'
                 $confirm = Read-Host '确认关闭？(y/N)'
                 if ($confirm.Trim().ToLower() -in @('y', 'yes')) { Set-ConfigBool $Script:SelectedConfigPath 'enableServerPlugins' $false; Write-Warn '请重启 SillyTavern 后生效。' }
             }
-            '7' { Invoke-BackendConfigMenu }
-            '8' { Invoke-RestartSillyTavern }
-            '9' { Invoke-BackendUpdateFromRepository }
-            '10' { Show-CurrentSelection }
+            '8' { Invoke-BackendConfigMenu }
+            '9' { Invoke-RestartSillyTavern }
+            '10' { Invoke-BackendUpdateFromRepository }
+            '11' { Show-CurrentSelection }
             '0' { break }
             default { Write-Warn '无效选项。' }
         }
