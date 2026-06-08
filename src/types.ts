@@ -120,6 +120,12 @@ export type SettingsGetStatus = {
 export type UpdateStatus = {
   checking: boolean;
   checked: boolean;
+  frontendCurrentVersion: string | null;
+  frontendLatestVersion: string | null;
+  frontendUpdateAvailable: boolean;
+  backendCurrentVersion: string | null;
+  backendLatestVersion: string | null;
+  backendUpdateAvailable: boolean;
   currentVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;

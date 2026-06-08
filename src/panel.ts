@@ -91,17 +91,40 @@ function renderHelperSection() {
   `;
 }
 
+function versionLabel(value: string | null | undefined) {
+  return escapeHtml(value || '-');
+}
+
+function renderVersionLine(label: string, current: string | null | undefined, latest: string | null | undefined, available: boolean, hint = '') {
+  const suffix = hint ? `，${hint}` : '';
+  if (available) {
+    return `${label}：发现新版本 ${versionLabel(latest)}（当前 ${versionLabel(current)}${suffix}）`;
+  }
+  if (latest) {
+    return `${label}：当前 ${versionLabel(current)}，远端 ${versionLabel(latest)}，已是最新`;
+  }
+  return `${label}：当前 ${versionLabel(current)}，远端未检查`;
+}
+
 function renderUpdateSection() {
   const u = state.update;
+  const frontendCurrent = u.frontendCurrentVersion ?? u.currentVersion;
+  const frontendLatest = u.frontendLatestVersion ?? u.latestVersion;
+  const frontendUpdateAvailable = u.frontendUpdateAvailable ?? u.updateAvailable;
+  const backendCurrent = u.backendCurrentVersion ?? state.backend?.version ?? null;
+  const backendLatest = u.backendLatestVersion;
+  const backendUpdateAvailable = u.backendUpdateAvailable;
+
   const status = u.checking
     ? '检查中…'
     : u.error
       ? `检查失败：${escapeHtml(u.error)}`
       : !u.checked
-        ? '尚未检查'
-        : u.updateAvailable
-          ? `发现新版本：${escapeHtml(u.latestVersion)}（当前 ${escapeHtml(u.currentVersion)}）`
-          : `当前已是最新版本：${escapeHtml(u.currentVersion ?? '-')}`;
+        ? `尚未检查远端版本；前端：${versionLabel(frontendCurrent)}；后端：${versionLabel(backendCurrent)}`
+        : [
+          renderVersionLine('前端扩展', frontendCurrent, frontendLatest, frontendUpdateAvailable),
+          renderVersionLine('后端插件', backendCurrent, backendLatest, backendUpdateAvailable, '需用脚本助手单独更新'),
+        ].join('<br>');
 
   return `
     <div class="cp-section">
@@ -113,10 +136,10 @@ function renderUpdateSection() {
         （自动检查时先 GitHub，失败后 Gitee）
       </div>
       <div class="cp-status cp-status-compact">${status}</div>
-      <div class="cp-muted">上次检查：${fmtTime(u.lastCheckedAt)}；已跳过版本：${escapeHtml(state.localSettings.skippedUpdateVersion || '-')}</div>
+      <div class="cp-muted">上次检查：${fmtTime(u.lastCheckedAt)}；前端已跳过版本：${escapeHtml(state.localSettings.skippedUpdateVersion || '-')}</div>
       <div class="cp-actions cp-actions-top">
         <button id="cp_check_update" class="menu_button" ${u.checking ? 'disabled' : ''}>检查更新</button>
-        <button id="cp_run_update" class="menu_button" ${u.updateAvailable && !u.checking ? '' : 'disabled'}>更新前端</button>
+        <button id="cp_run_update" class="menu_button" ${frontendUpdateAvailable && !u.checking ? '' : 'disabled'}>更新前端</button>
       </div>
     </div>
   `;

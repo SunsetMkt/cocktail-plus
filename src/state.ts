@@ -11,6 +11,12 @@ export const DEFAULT_LOCAL_SETTINGS: LocalSettings = {
 export const DEFAULT_UPDATE_STATUS: UpdateStatus = {
   checking: false,
   checked: false,
+  frontendCurrentVersion: null,
+  frontendLatestVersion: null,
+  frontendUpdateAvailable: false,
+  backendCurrentVersion: null,
+  backendLatestVersion: null,
+  backendUpdateAvailable: false,
   currentVersion: null,
   latestVersion: null,
   updateAvailable: false,
