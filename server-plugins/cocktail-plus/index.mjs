@@ -22,7 +22,7 @@ function readVersion() {
     if (version) return version;
   } catch {
   }
-  return "0.1.16";
+  return "0.1.17";
 }
 var VERSION = readVersion();
 var info = {
@@ -2670,6 +2670,7 @@ ${fastRoutes}
   var settingsGetPrefetch = null;
   var csrfPrefetch = null;
   var settingsGetCsrfToken = '';
+  var characterEditRecoveryQueues = new Map();
   var fastGetPrefetches = new Map();
   var extensionDiscoverPrefetch = null;
   var extensionManifestPrefetches = new Map();
@@ -4167,6 +4168,124 @@ ${fastRoutes}
     return patchText.length < next.length ? patch : { type: 'set', value: next };
   }
 
+  async function cpBuildCharacterEditPayload(plain, rawJson) {
+    var raw = JSON.parse(String(rawJson || '{}'));
+    var baseHash = await sha256Hex(rawJson);
+    var baseFields = cpCharacterEditBaseFields(raw, plain);
+    var payload = { avatar_url: String(plain.avatar_url), baseHash: baseHash, fields: {}, patches: {}, meta: { avatar_url: String(plain.avatar_url), chat: plain.chat || '', create_date: plain.create_date || '', extensions: plain.extensions || '' } };
+    Object.keys(plain).forEach(function (key) {
+      if (key === 'json_data' || key === 'avatar') return;
+      var nextValue = plain[key];
+      var baseValue = baseFields[key];
+      if (Array.isArray(nextValue) || Array.isArray(baseValue)) {
+        if (!sameJson(nextValue, baseValue)) payload.fields[key] = nextValue;
+        return;
+      }
+      if (String(nextValue ?? '') === String(baseValue ?? '')) return;
+      if (typeof nextValue === 'string' && typeof baseValue === 'string') payload.patches[key] = cpMakeStringPatch(baseValue, nextValue);
+      else payload.fields[key] = nextValue;
+    });
+    return payload;
+  }
+
+  async function cpPostCharacterEditPayload(rawFetch, input, init, payload) {
+    var headers = cloneHeaders(input, init);
+    headers.set('content-type', 'application/json');
+    headers.delete && headers.delete('content-encoding');
+    return await rawFetch(PREFIX + '/fast/characters-edit', { method: 'POST', headers: headers, credentials: (init && init.credentials) || 'same-origin', cache: 'no-store', redirect: 'manual', body: JSON.stringify(payload) });
+  }
+
+  function cpSyncCharacterEditJsonData(avatar, data, jsonData) {
+    var expectedAvatar = String(avatar || '');
+    var text = String(jsonData || '');
+    if (!expectedAvatar || !text) return;
+    try {
+      var hidden = document.querySelector('#character_json_data');
+      var avatarPole = document.querySelector('#avatar_url_pole');
+      if (hidden && avatarPole && String(avatarPole.value || '') === expectedAvatar) hidden.value = text;
+    } catch (_) {}
+    try {
+      var ctx = window.SillyTavern && typeof window.SillyTavern.getContext === 'function' ? window.SillyTavern.getContext() : null;
+      var chars = ctx && Array.isArray(ctx.characters) ? ctx.characters : null;
+      if (chars) {
+        var index = chars.findIndex(function (item) { return item && item.avatar === expectedAvatar; });
+        if (index >= 0 && data && typeof data === 'object') {
+          Object.assign(chars[index], data);
+          chars[index].json_data = text;
+        }
+      }
+    } catch (_) {}
+  }
+
+  async function cpFetchLatestCharacterJsonForEdit(rawFetch, input, init, avatar) {
+    var expectedAvatar = String(avatar || '');
+    if (!expectedAvatar) return null;
+    var headers = cloneHeaders(input, init);
+    headers.set('content-type', 'application/json');
+    headers.delete && headers.delete('content-encoding');
+    try {
+      var response = await rawFetch('/api/characters/get', { method: 'POST', headers: headers, credentials: (init && init.credentials) || 'same-origin', cache: 'no-store', redirect: 'manual', body: JSON.stringify({ avatar_url: expectedAvatar }) });
+      if (!response || !response.ok) {
+        remember('character.edit.stale-refresh-failed', { avatar: expectedAvatar, status: response && response.status });
+        return null;
+      }
+      var text = await response.text();
+      var data = JSON.parse(text || '{}');
+      var jsonData = String(data && data.json_data || '');
+      if (!jsonData) {
+        remember('character.edit.stale-refresh-empty', { avatar: expectedAvatar, bytes: text.length });
+        return null;
+      }
+      cpSyncCharacterEditJsonData(expectedAvatar, data, jsonData);
+      return { data: data, jsonData: jsonData };
+    } catch (error) {
+      remember('character.edit.stale-refresh-error', { avatar: expectedAvatar, error: String(error && error.message || error) });
+      return null;
+    }
+  }
+
+  function cpEnqueueCharacterEditRecovery(avatar, task) {
+    var key = String(avatar || '__unknown__');
+    var previous = characterEditRecoveryQueues.get(key) || Promise.resolve();
+    var run = previous.catch(function () {}).then(task);
+    var stored = run.finally(function () {
+      if (characterEditRecoveryQueues.get(key) === stored) characterEditRecoveryQueues.delete(key);
+    });
+    characterEditRecoveryQueues.set(key, stored);
+    return run;
+  }
+
+  async function cpRecoverCharacterEditStale(rawFetch, input, init, plain, staleResponse) {
+    var avatar = String(plain && plain.avatar_url || '');
+    remember('character.edit.stale-fallback', { avatar: avatar });
+    return await cpEnqueueCharacterEditRecovery(avatar, async function () {
+      var latest = await cpFetchLatestCharacterJsonForEdit(rawFetch, input, init, avatar);
+      if (!latest || !latest.jsonData) return staleResponse;
+      var retryPlain = Object.assign({}, plain, { json_data: latest.jsonData });
+      var retryPayload;
+      try {
+        retryPayload = await cpBuildCharacterEditPayload(retryPlain, latest.jsonData);
+      } catch (error) {
+        remember('character.edit.stale-retry-build-error', { avatar: avatar, error: String(error && error.message || error) });
+        return staleResponse;
+      }
+      var retryResponse;
+      try {
+        retryResponse = await cpPostCharacterEditPayload(rawFetch, input, init, retryPayload);
+      } catch (error) {
+        remember('character.edit.stale-retry-error', { avatar: avatar, error: String(error && error.message || error) });
+        return staleResponse;
+      }
+      if (retryResponse && retryResponse.ok) {
+        remember('character.edit.stale-retry', { avatar: avatar, fields: Object.keys(retryPayload.fields).length, patches: Object.keys(retryPayload.patches).length, status: retryResponse.status });
+        characterGetPatchBaselines.delete(avatar);
+        return retryResponse;
+      }
+      remember('character.edit.stale-retry-failed', { avatar: avatar, status: retryResponse && retryResponse.status });
+      return retryResponse || staleResponse;
+    });
+  }
+
   async function handleCharacterEditFetch(rawFetch, input, init, url, method) {
     if (!rawFetch || !url || method !== 'POST') return null;
     try {
@@ -4179,32 +4298,14 @@ ${fastRoutes}
       if (plain.avatar instanceof File) return null;
       var rawJson = String(plain.json_data || '');
       if (!rawJson || !plain.avatar_url) return null;
-      var raw = JSON.parse(rawJson);
-      var baseHash = await sha256Hex(rawJson);
-      var baseFields = cpCharacterEditBaseFields(raw, plain);
-      var payload = { avatar_url: String(plain.avatar_url), baseHash: baseHash, fields: {}, patches: {}, meta: { avatar_url: String(plain.avatar_url), chat: plain.chat || '', create_date: plain.create_date || '', extensions: plain.extensions || '' } };
-      Object.keys(plain).forEach(function (key) {
-        if (key === 'json_data' || key === 'avatar') return;
-        var nextValue = plain[key];
-        var baseValue = baseFields[key];
-        if (Array.isArray(nextValue) || Array.isArray(baseValue)) {
-          if (!sameJson(nextValue, baseValue)) payload.fields[key] = nextValue;
-          return;
-        }
-        if (String(nextValue ?? '') === String(baseValue ?? '')) return;
-        if (typeof nextValue === 'string' && typeof baseValue === 'string') payload.patches[key] = cpMakeStringPatch(baseValue, nextValue);
-        else payload.fields[key] = nextValue;
-      });
-      var headers = cloneHeaders(input, init);
-      headers.set('content-type', 'application/json');
-      headers.delete && headers.delete('content-encoding');
-      var fastResponse = await rawFetch(PREFIX + '/fast/characters-edit', { method: 'POST', headers: headers, credentials: (init && init.credentials) || 'same-origin', cache: 'no-store', redirect: 'manual', body: JSON.stringify(payload) });
+      var payload = await cpBuildCharacterEditPayload(plain, rawJson);
+      var fastResponse = await cpPostCharacterEditPayload(rawFetch, input, init, payload);
       if (fastResponse && fastResponse.ok) {
         remember('character.edit.optimized', { avatar: plain.avatar_url, fields: Object.keys(payload.fields).length, patches: Object.keys(payload.patches).length });
         characterGetPatchBaselines.delete(String(plain.avatar_url));
         return fastResponse;
       }
-      if (fastResponse && fastResponse.status === 409) remember('character.edit.stale-fallback', { avatar: plain.avatar_url });
+      if (fastResponse && fastResponse.status === 409) return await cpRecoverCharacterEditStale(rawFetch, input, init, plain, fastResponse);
       return fastResponse;
     } catch (error) {
       remember('character.edit.fast-error', { error: String(error && error.message || error) });
