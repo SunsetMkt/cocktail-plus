@@ -320,6 +320,113 @@ function Install-BackendPlugin {
     Write-Warn '请重启 SillyTavern 后生效。'
 }
 
+function Test-FrontendPluginSource([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $full = Get-FullPathSafe $Path
+    return (
+        (Test-Path -LiteralPath (Join-Path $full 'manifest.json') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $full 'dist\index.js') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $full "server-plugins\$PluginId\index.mjs") -PathType Leaf)
+    )
+}
+
+function Find-BundledFrontendSource {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if ($PSScriptRoot) {
+        $dir = Get-FullPathSafe $PSScriptRoot
+        for ($i = 0; $i -lt 8; $i++) {
+            Add-UniquePath $candidates $dir
+            $parent = Split-Path -Parent $dir
+            if ($parent -eq $dir) { break }
+            $dir = $parent
+        }
+    }
+    if ($Script:SelectedRoot) {
+        Add-UniquePath $candidates (Join-Path $Script:SelectedRoot "public\scripts\extensions\third-party\$PluginId")
+    }
+    if ($Script:SelectedConfigPath) {
+        $dataRoot = Resolve-DataRoot $Script:SelectedRoot $Script:SelectedConfigPath
+        Add-UniquePath $candidates (Join-Path $dataRoot "default-user\extensions\$PluginId")
+        if (Test-Path -LiteralPath $dataRoot -PathType Container) {
+            try {
+                Get-ChildItem -LiteralPath $dataRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                    Add-UniquePath $candidates (Join-Path $_.FullName "extensions\$PluginId")
+                }
+            } catch {}
+        }
+    }
+    foreach ($candidate in $candidates) {
+        if (Test-FrontendPluginSource $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Copy-FrontendDirectoryContents([string]$Source, [string]$Destination) {
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    Get-ChildItem -LiteralPath $Source -Force | Where-Object { $_.Name -notin @('node_modules', '.deploy-backups') } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+    }
+}
+
+function Install-FrontendExtension {
+    Ensure-ConfigSelected
+    Write-Title '安装前端扩展'
+    Write-Host '[1] 给所有人安装（public/scripts/extensions/third-party）'
+    Write-Host '[2] 给某个用户安装（data/<账号>/extensions）'
+    Write-Host '[0] 返回'
+    $scope = Read-Host '请选择安装范围'
+    if ($scope.Trim() -eq '0') { return }
+
+    $target = $null
+    if ($scope.Trim() -eq '1') {
+        $target = Join-Path $Script:SelectedRoot "public\scripts\extensions\third-party\$PluginId"
+    } elseif ($scope.Trim() -eq '2') {
+        $userName = Read-Host '请输入账号（例如 default-user）'
+        $userName = $userName.Trim().Trim('"').Trim("'")
+        if ([string]::IsNullOrWhiteSpace($userName)) { Write-Warn '账号不能为空。'; return }
+        $dataRoot = Resolve-DataRoot $Script:SelectedRoot $Script:SelectedConfigPath
+        $target = Join-Path $dataRoot (Join-Path $userName "extensions\$PluginId")
+    } else {
+        Write-Warn '无效选项。'
+        return
+    }
+
+    Write-Host "目标目录：$target"
+    if (Test-Path -LiteralPath $target) {
+        $replace = Read-Host '检测到已存在同名文件夹，是否替换？(y/N)'
+        if ($replace.Trim().ToLower() -notin @('y', 'yes')) { Write-Warn '已取消'; return }
+    }
+
+    $tempRoot = Join-Path $env:TEMP ("cocktail-plus-frontend-" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    $source = $null
+    try {
+        try {
+            $remote = Get-RemoteCocktailPlusInfo -Quiet
+            $source = Clone-CocktailPlusRepoRoot $remote $tempRoot
+        } catch {
+            Write-Warn "从 GitHub/Gitee 下载前端扩展失败：$($_.Exception.Message)"
+            $source = Find-BundledFrontendSource
+            if (-not $source) { throw '找不到可用的前端扩展源目录。请确认已安装前端扩展，或安装 Git 后重试。' }
+            Write-Info "使用本地前端扩展源：$source"
+        }
+
+        if ((Get-FullPathSafe $source) -eq (Get-FullPathSafe $target)) { throw '源目录和目标目录相同，无法替换自身。请安装 Git 后从远端安装，或选择另一份源。' }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        if (Test-Path -LiteralPath $target) {
+            $backupRoot = Join-Path (Split-Path -Parent $target) '.cocktail-plus-backups'
+            New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+            $backup = Join-Path $backupRoot ("$PluginId-frontend-" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+            Move-Item -LiteralPath $target -Destination $backup -Force
+            Write-Host "已备份旧前端扩展：$backup"
+        }
+        Copy-FrontendDirectoryContents $source $target
+        Write-Ok "前端扩展已安装到：$target"
+        Write-Warn '请刷新浏览器页面。若扩展列表仍旧，尝试 Ctrl+F5 或清理浏览器缓存。'
+    } finally {
+        try { if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force } } catch {}
+    }
+}
+
 function Restore-CocktailPlusIndexHtml {
     param(
         [switch]$NoBackup
@@ -926,7 +1033,34 @@ function Show-BackendUpdateNotice {
     if (-not $Script:BackendUpdateNotice) { return }
     Write-Host ''
     Write-Warn "检测到 cocktail-plus 后端扩展更新：$($Script:BackendUpdateNotice.CurrentVersion) -> $($Script:BackendUpdateNotice.RemoteVersion)（$($Script:BackendUpdateNotice.SourceName)）"
-    Write-Warn '输入9更新 cocktail-plus 后端扩展；前端扩展请在酒馆网页进行更新。'
+    Write-Warn '输入10更新 cocktail-plus 后端扩展；输入13可安装/重装前端扩展。'
+}
+
+function Clone-CocktailPlusRepoRoot($RemoteInfo, [string]$TempRoot) {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw '找不到 git 命令。请安装 Git，或先通过前端扩展安装后再使用本脚本。'
+    }
+
+    $ordered = @()
+    if ($RemoteInfo?.Repo) { $ordered += $RemoteInfo.Repo }
+    foreach ($source in $RemoteInfo.Sources) {
+        if ($ordered -notcontains $source.Repo) { $ordered += $source.Repo }
+    }
+
+    foreach ($repo in $ordered) {
+        try {
+            if (Test-Path -LiteralPath $TempRoot) { Remove-Item -LiteralPath $TempRoot -Recurse -Force }
+            Write-Info "下载仓库：$repo"
+            & git clone --depth 1 $repo $TempRoot
+            if ($LASTEXITCODE -eq 0 -and (Test-FrontendPluginSource $TempRoot)) {
+                return $TempRoot
+            }
+            Write-Warn "仓库内容不完整：$repo"
+        } catch {
+            Write-Warn "下载失败：$repo - $($_.Exception.Message)"
+        }
+    }
+    throw 'GitHub/Gitee 仓库下载均失败。'
 }
 
 function Clone-CocktailPlusRepo($RemoteInfo, [string]$TempRoot) {
@@ -1124,7 +1258,7 @@ function Show-Menu {
     Write-Host '重启酒馆本体，输入9'
     Write-Host ''
     Write-Host '后端扩展和前端扩展更新是独立的，需要分别进行更新'
-    Write-Host '后端扩展更新输入10，前端扩展更新在酒馆网页进行更新'
+    Write-Host '后端扩展更新输入10；前端扩展安装/重装输入13，网页面板也可更新前端'
     Show-BackendUpdateNotice
     Write-Host ''
     Write-Host '[1] 自动探测 SillyTavern/config.yaml（酒馆配置文件）'
@@ -1139,6 +1273,7 @@ function Show-Menu {
     Write-Host '[10] 更新 cocktail-plus 后端扩展版本'
     Write-Host '[11] 显示当前选择'
     Write-Host '[12] 修复 SillyTavern 聊天文件 ENOENT 崩溃问题'
+    Write-Host '[13] 安装/重新安装 cocktail-plus 前端扩展'
     Write-Host '[0] 退出'
 }
 
@@ -1166,6 +1301,7 @@ while ($true) {
             '10' { Invoke-BackendUpdateFromRepository }
             '11' { Show-CurrentSelection }
             '12' { Invoke-SillyTavernChatsEnoentPatchMenu }
+            '13' { Install-FrontendExtension }
             '0' { break }
             default { Write-Warn '无效选项。' }
         }

@@ -442,6 +442,114 @@ find_frontend_backend_source() {
   return 1
 }
 
+test_frontend_plugin_source() {
+  local dir="$1"
+  [ -n "$dir" ] || return 1
+  [ -f "$dir/manifest.json" ] || return 1
+  [ -f "$dir/dist/index.js" ] || return 1
+  [ -f "$dir/server-plugins/$PLUGIN_ID/index.mjs" ] || return 1
+}
+
+find_bundled_frontend_source() {
+  local candidates=() dir parent data_root candidate
+  if [ -n "$SCRIPT_DIR" ]; then
+    dir="$(abs_path "$SCRIPT_DIR")"
+    for _ in 1 2 3 4 5 6 7 8; do
+      candidates+=("$dir")
+      parent="$(dirname "$dir")"
+      [ "$parent" = "$dir" ] && break
+      dir="$parent"
+    done
+  fi
+  [ -n "$SELECTED_ROOT" ] && candidates+=("$SELECTED_ROOT/public/scripts/extensions/third-party/$PLUGIN_ID")
+  if [ -n "$SELECTED_CONFIG" ]; then
+    data_root="$(resolve_data_root "$SELECTED_ROOT" "$SELECTED_CONFIG")"
+    candidates+=("$data_root/default-user/extensions/$PLUGIN_ID")
+    if [ -d "$data_root" ]; then
+      while IFS= read -r user_dir; do
+        candidates+=("$user_dir/extensions/$PLUGIN_ID")
+      done < <(find "$data_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
+    fi
+  fi
+  while IFS= read -r candidate; do
+    if test_frontend_plugin_source "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(printf '%s\n' "${candidates[@]}" | unique_lines)
+  return 1
+}
+
+copy_frontend_dir_contents() {
+  local source="$1" target="$2"
+  mkdir -p "$target"
+  (cd "$source" && tar --exclude='node_modules' --exclude='.deploy-backups' -cf - .) | (cd "$target" && tar -xf -)
+}
+
+install_frontend_extension() {
+  ensure_config_selected || return 1
+  say_title '安装前端扩展'
+  printf '[1] 给所有人安装（public/scripts/extensions/third-party）\n'
+  printf '[2] 给某个用户安装（data/<账号>/extensions）\n'
+  printf '[0] 返回\n'
+  local scope target user_name data_root replace tmp source cleanup_tmp backup_root backup
+  read -r -p '请选择安装范围: ' scope
+  case "$scope" in
+    0) return 0 ;;
+    1) target="$SELECTED_ROOT/public/scripts/extensions/third-party/$PLUGIN_ID" ;;
+    2)
+      read -r -p '请输入账号（例如 default-user）: ' user_name
+      user_name="${user_name%\"}"; user_name="${user_name#\"}"
+      user_name="$(printf '%s' "$user_name" | sed -E "s/^[[:space:]]+|[[:space:]]+$//g; s/^'//; s/'$//")"
+      if [ -z "$user_name" ]; then say_warn '账号不能为空。'; return 0; fi
+      data_root="$(resolve_data_root "$SELECTED_ROOT" "$SELECTED_CONFIG")"
+      target="$data_root/$user_name/extensions/$PLUGIN_ID"
+      ;;
+    *) say_warn '无效选项。'; return 0 ;;
+  esac
+
+  printf '目标目录：%s\n' "$target"
+  if [ -e "$target" ]; then
+    read -r -p '检测到已存在同名文件夹，是否替换？(y/N) ' replace
+    if ! [[ "$replace" =~ ^[Yy] ]]; then say_warn '已取消'; return 0; fi
+  fi
+
+  tmp="${TMPDIR:-/tmp}/cocktail-plus-frontend-$(date +%Y%m%d_%H%M%S)"
+  cleanup_tmp=""
+  if source="$(clone_cocktail_plus_repo_root "$tmp" 2>/dev/null)"; then
+    cleanup_tmp="$tmp"
+  else
+    say_warn '从 GitHub/Gitee 下载前端扩展失败。'
+    if ! source="$(find_bundled_frontend_source)"; then
+      say_warn '找不到可用的前端扩展源目录。请确认已安装前端扩展，或安装 Git 后重试。'
+      rm -rf "$tmp"
+      return 1
+    fi
+    rm -rf "$tmp"
+    say_info "使用本地前端扩展源：$source"
+  fi
+
+  if [ "$(abs_path "$source")" = "$(abs_path "$target")" ]; then
+    say_warn '源目录和目标目录相同，无法替换自身。请安装 Git 后从远端安装，或选择另一份源。'
+    [ -n "$cleanup_tmp" ] && rm -rf "$cleanup_tmp"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$target")"
+  if [ -e "$target" ]; then
+    backup_root="$(dirname "$target")/.cocktail-plus-backups"
+    mkdir -p "$backup_root"
+    backup="$backup_root/$PLUGIN_ID-frontend-$(date +%Y%m%d_%H%M%S)"
+    mv "$target" "$backup"
+    printf '已备份旧前端扩展：%s\n' "$backup"
+  fi
+
+  copy_frontend_dir_contents "$source" "$target"
+  [ -n "$cleanup_tmp" ] && rm -rf "$cleanup_tmp"
+  say_ok "前端扩展已安装到：$target"
+  say_warn '请刷新浏览器页面。若扩展列表仍旧，尝试 Ctrl+F5 或清理浏览器缓存。'
+}
+
 install_backend_plugin() {
   ensure_config_selected || return 1
   say_title '安装后端扩展'
@@ -1034,7 +1142,7 @@ show_backend_update_notice() {
   [ -n "$BACKEND_UPDATE_NOTICE_REMOTE" ] || return 0
   printf '\n'
   say_warn "检测到 cocktail-plus 后端扩展更新：$BACKEND_UPDATE_NOTICE_CURRENT -> $BACKEND_UPDATE_NOTICE_REMOTE（$BACKEND_UPDATE_NOTICE_SOURCE）"
-  say_warn '输入9更新 cocktail-plus 后端扩展；前端扩展请在酒馆网页进行更新。'
+  say_warn '输入10更新 cocktail-plus 后端扩展；输入13可安装/重装前端扩展。'
 }
 
 clone_cocktail_plus_repo() {
@@ -1054,6 +1162,33 @@ clone_cocktail_plus_repo() {
     if git clone --depth 1 "$repo" "$tmp"; then
       if [ -f "$tmp/server-plugins/cocktail-plus/index.mjs" ]; then
         printf '%s/server-plugins/cocktail-plus\n' "$tmp"
+        return 0
+      fi
+      say_warn "仓库内容不完整：$repo" >&2
+    else
+      say_warn "下载失败：$repo" >&2
+    fi
+  done
+  return 1
+}
+
+clone_cocktail_plus_repo_root() {
+  local tmp="$1"
+  if ! command -v git >/dev/null 2>&1; then
+    say_warn '找不到 git 命令。请安装 Git，或先通过前端扩展安装后再使用本脚本。'
+    return 1
+  fi
+  local repos=(
+    'https://github.com/Lianues/cocktail-plus.git'
+    'https://gitee.com/lianues/cocktail-plus.git'
+  )
+  local repo
+  for repo in "${repos[@]}"; do
+    rm -rf "$tmp"
+    say_info "下载仓库：$repo" >&2
+    if git clone --depth 1 "$repo" "$tmp"; then
+      if test_frontend_plugin_source "$tmp"; then
+        printf '%s\n' "$tmp"
         return 0
       fi
       say_warn "仓库内容不完整：$repo" >&2
@@ -1217,7 +1352,7 @@ show_menu() {
   printf '重启酒馆本体，输入9\n'
   printf '\n'
   printf '后端扩展和前端扩展更新是独立的，需要分别进行更新\n'
-  printf '后端扩展更新输入10，前端扩展更新在酒馆网页进行更新\n'
+  printf '后端扩展更新输入10；前端扩展安装/重装输入13，网页面板也可更新前端\n'
   show_backend_update_notice
   printf '\n'
   printf '[1] 自动探测 SillyTavern/config.yaml（酒馆配置文件）\n'
@@ -1232,6 +1367,7 @@ show_menu() {
   printf '[10] 更新 cocktail-plus 后端扩展版本\n'
   printf '[11] 显示当前选择\n'
   printf '[12] 修复 SillyTavern 聊天文件 ENOENT 崩溃问题\n'
+  printf '[13] 安装/重新安装 cocktail-plus 前端扩展\n'
   printf '[0] 退出\n'
 }
 
@@ -1258,6 +1394,7 @@ while true; do
     10) update_backend_from_repository ;;
     11) show_current_selection ;;
     12) source_patch_menu ;;
+    13) install_frontend_extension ;;
     0) break ;;
     *) say_warn '无效选项。' ;;
   esac
