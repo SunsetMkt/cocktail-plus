@@ -397,13 +397,11 @@ const REPO_URLS = Object.freeze([
 ]);
 const DEFAULT_REMOTE_MANIFEST_URLS = Object.freeze([
   "https://raw.githubusercontent.com/Lianues/cocktail-plus/main/manifest.json",
-  "https://gitee.com/lianues/cocktail-plus/raw/main/manifest.json",
-  "https://raw.giteeusercontent.com/lianues/cocktail-plus/raw/main/manifest.json"
+  "https://gitee.com/api/v5/repos/lianues/cocktail-plus/contents/manifest.json?ref=main"
 ]);
 const DEFAULT_REMOTE_BACKEND_VERSION_URLS = Object.freeze([
   "https://raw.githubusercontent.com/Lianues/cocktail-plus/main/server-plugins/cocktail-plus/version.json",
-  "https://gitee.com/lianues/cocktail-plus/raw/main/server-plugins/cocktail-plus/version.json",
-  "https://raw.giteeusercontent.com/lianues/cocktail-plus/raw/main/server-plugins/cocktail-plus/version.json"
+  "https://gitee.com/api/v5/repos/lianues/cocktail-plus/contents/server-plugins/cocktail-plus/version.json?ref=main"
 ]);
 let promptedUpdateVersionThisSession = "";
 function normalizeVersionString(version) {
@@ -451,6 +449,23 @@ async function fetchJsonWithTimeout(url, timeoutMs = 8e3) {
   } finally {
     clearTimeout(timer);
   }
+}
+function decodeBase64Utf8(base64) {
+  const normalized = String(base64 || "").replace(/\s/g, "");
+  if (!normalized) return "";
+  const binary = atob(normalized);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder("utf-8").decode(bytes);
+}
+function normalizeRemoteJsonPayload(payload) {
+  if ((payload == null ? void 0 : payload.encoding) === "base64" && typeof payload.content === "string") {
+    try {
+      return JSON.parse(decodeBase64Utf8(payload.content));
+    } catch {
+      return null;
+    }
+  }
+  return payload;
 }
 function getLocalManifestUrl() {
   try {
@@ -512,7 +527,8 @@ async function getLatestVersion(kind = "frontend") {
   for (const group of groups) {
     for (const url of group) {
       try {
-        const remote = await fetchJsonWithTimeout(url, 8e3);
+        const payload = await fetchJsonWithTimeout(url, 8e3);
+        const remote = normalizeRemoteJsonPayload(payload);
         const version = normalizeVersionString(remote == null ? void 0 : remote.version);
         if (version) return { version, raw: remote, source: url };
       } catch {
