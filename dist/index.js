@@ -600,7 +600,10 @@ async function updateFrontendViaApi() {
     });
     const data2 = await response2.json().catch(() => ({}));
     if (!response2.ok || (data2 == null ? void 0 : data2.ok) === false) {
-      throw new Error((data2 == null ? void 0 : data2.error) || response2.statusText || String(response2.status));
+      if (response2.status === 404) {
+        throw new Error("尚未安装后端扩展，请安装后端扩展");
+      }
+      throw new Error((data2 == null ? void 0 : data2.error) || `${response2.status} ${response2.statusText}`);
     }
     return { ...data2, externalId, type, global: type === "global", updater: "cocktail-plus-backend" };
   }
@@ -610,8 +613,13 @@ async function updateFrontendViaApi() {
     body: JSON.stringify(payload)
   });
   if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    const isHtml = contentType.includes("text/html");
+    if (response.status === 404 || isHtml) {
+      throw new Error("尚未安装后端扩展，请安装后端扩展");
+    }
     const text = await response.text().catch(() => "");
-    throw new Error(text || response.statusText || String(response.status));
+    throw new Error(text || `${response.status} ${response.statusText}`);
   }
   const data = await response.json().catch(() => ({}));
   return { ...data, externalId, type, global: type === "global", updater: "sillytavern" };
