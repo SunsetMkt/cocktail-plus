@@ -1,6 +1,6 @@
 // server-plugins/cocktail-plus/src/cache-store.ts
-import fs9 from "node:fs";
-import path8 from "node:path";
+import fs10 from "node:fs";
+import path9 from "node:path";
 
 // server-plugins/cocktail-plus/src/constants.ts
 import fs from "node:fs";
@@ -22,7 +22,7 @@ function readVersion() {
     if (version) return version;
   } catch {
   }
-  return "0.1.21";
+  return "0.1.22";
 }
 var VERSION = readVersion();
 var info = {
@@ -548,8 +548,8 @@ var charactersAllEndpoint = {
 };
 
 // server-plugins/cocktail-plus/src/endpoints/chat-save.ts
-import fs5 from "node:fs";
-import path4 from "node:path";
+import fs6 from "node:fs";
+import path5 from "node:path";
 
 // server-plugins/cocktail-plus/src/original-fetch.ts
 function pickResponseHeaders(response) {
@@ -646,6 +646,8 @@ async function fetchOriginal(ctx, endpoint, options = {}) {
 }
 
 // server-plugins/cocktail-plus/src/request-context.ts
+import fs5 from "node:fs";
+import path4 from "node:path";
 function getUserHandleFromRequest(req) {
   return String(req?.user?.profile?.handle || req?.user?.profile?.name || "default");
 }
@@ -653,13 +655,64 @@ function getUserKeyFromHandle(handle) {
   return sha256(`${getDataRoot()}
 ${handle}`).slice(0, 32);
 }
+var cachedLocalOrigin = null;
+function parsePortFromArgv() {
+  const argv = Array.isArray(process.argv) ? process.argv : [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = String(argv[i] || "");
+    if (arg === "--port" && argv[i + 1] !== void 0) {
+      const n = Number(argv[i + 1]);
+      if (Number.isInteger(n) && n > 0 && n < 65536) return n;
+    }
+    const inline = arg.match(/^--port=(\d+)$/);
+    if (inline) {
+      const n = Number(inline[1]);
+      if (Number.isInteger(n) && n > 0 && n < 65536) return n;
+    }
+  }
+  return null;
+}
+function parseServerConfigYaml() {
+  try {
+    const text = fs5.readFileSync(path4.join(getServerRoot(), "config.yaml"), "utf8");
+    const lines = text.split(/\r?\n/);
+    let port = null;
+    let sslEnabled = false;
+    let inSslBlock = false;
+    for (const line of lines) {
+      const portMatch = line.match(/^port:\s*(\d+)/);
+      if (portMatch) port = Number(portMatch[1]);
+      if (/^ssl:\s*$/.test(line)) {
+        inSslBlock = true;
+        continue;
+      }
+      if (inSslBlock) {
+        if (/^\S/.test(line)) {
+          inSslBlock = false;
+        } else {
+          const sslMatch = line.match(/^\s+enabled:\s*(true|false)\b/);
+          if (sslMatch) sslEnabled = sslMatch[1] === "true";
+        }
+      }
+    }
+    return { port: Number.isInteger(port) && port > 0 ? port : null, sslEnabled };
+  } catch {
+    return { port: null, sslEnabled: false };
+  }
+}
+function resolveLocalServerOrigin() {
+  if (cachedLocalOrigin) return cachedLocalOrigin;
+  const fromYaml = parseServerConfigYaml();
+  const port = parsePortFromArgv() || fromYaml.port || 8e3;
+  const protocol = fromYaml.sslEnabled ? "https" : "http";
+  cachedLocalOrigin = { protocol, host: `127.0.0.1:${port}`, sslEnabled: fromYaml.sslEnabled };
+  return cachedLocalOrigin;
+}
 function makeRequestContext(req, options = {}) {
   const handle = getUserHandleFromRequest(req);
   const userKey = getUserKeyFromHandle(handle);
   const body = options.bodyOverride !== void 0 ? options.bodyOverride : req.body ?? {};
-  const forwardedProto = String(req.headers?.["x-forwarded-proto"] || "").split(",")[0].trim();
-  const protocol = forwardedProto || req.protocol || (req.secure ? "https" : "http");
-  const host = req.get?.("host") || req.headers?.host || "127.0.0.1";
+  const { protocol, host } = resolveLocalServerOrigin();
   return {
     requestId: options.requestId || null,
     handle,
@@ -736,18 +789,18 @@ function sanitizeFileName(value) {
   let out = asString(value).replace(/[<>:"/\\|?*\x00-\x1F]/g, "").replace(/[\u{0080}-\u{009F}]/gu, "").trim();
   if (!out || /^\.+$/.test(out)) out = "untitled";
   if (out.length > 240) {
-    const ext = path4.extname(out);
+    const ext = path5.extname(out);
     out = out.slice(0, Math.max(1, 240 - ext.length)) + ext;
   }
   return out;
 }
 function isPathUnderParent(parent, candidate) {
-  const relative = path4.relative(parent, candidate);
-  return !!relative && !relative.startsWith("..") && !path4.isAbsolute(relative);
+  const relative = path5.relative(parent, candidate);
+  return !!relative && !relative.startsWith("..") && !path5.isAbsolute(relative);
 }
 function getSafeStat(filePath) {
   try {
-    const stat = fs5.statSync(filePath);
+    const stat = fs6.statSync(filePath);
     return { exists: true, size: stat.size, mtimeMs: Math.round(stat.mtimeMs), file: stat.isFile() };
   } catch {
     return { exists: false, size: 0, mtimeMs: 0, file: false };
@@ -772,8 +825,8 @@ function parseJsonl(text) {
 }
 function readChatFromFile(filePath) {
   try {
-    if (!fs5.existsSync(filePath)) return [];
-    return parseJsonl(fs5.readFileSync(filePath, "utf8"));
+    if (!fs6.existsSync(filePath)) return [];
+    return parseJsonl(fs6.readFileSync(filePath, "utf8"));
   } catch {
     return [];
   }
@@ -810,7 +863,7 @@ function makeDescriptor(req, endpoint, body) {
     if (!id) throw new Error("group chat id is required");
     const root = req?.user?.directories?.groupChats;
     if (!root) throw new Error("User group chats directory is unavailable");
-    const filePath2 = path4.join(root, sanitizeFileName(`${id}.jsonl`));
+    const filePath2 = path5.join(root, sanitizeFileName(`${id}.jsonl`));
     if (!isPathUnderParent(root, filePath2)) throw new Error("Resolved group chat path is outside user directory");
     return {
       kind,
@@ -829,8 +882,8 @@ function makeDescriptor(req, endpoint, body) {
   const chatsRoot = req?.user?.directories?.chats;
   if (!chatsRoot) throw new Error("User chats directory is unavailable");
   const cardName = avatarUrl.replace(/\.png$/i, "");
-  const directoryPath = path4.join(chatsRoot, cardName);
-  const filePath = path4.join(directoryPath, sanitizeFileName(`${fileName}.jsonl`));
+  const directoryPath = path5.join(chatsRoot, cardName);
+  const filePath = path5.join(directoryPath, sanitizeFileName(`${fileName}.jsonl`));
   if (!isPathUnderParent(chatsRoot, filePath)) throw new Error("Resolved chat path is outside user directory");
   return {
     kind,
@@ -1056,8 +1109,8 @@ async function handleChatSaveFast(req, res, endpoint = chatSaveEndpoint) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/settings-get.ts
-import fs6 from "node:fs";
-import path5 from "node:path";
+import fs7 from "node:fs";
+import path6 from "node:path";
 var SETTINGS_FILE = "settings.json";
 var JSON_CONTENT_TYPE2 = "application/json; charset=utf-8";
 var settingsGetEndpoint = {
@@ -1163,13 +1216,13 @@ function getFallbackConfig() {
     process.env.SILLYTAVERN_CONFIG_PATH,
     process.env.CONFIG_PATH,
     globalThis.COMMAND_LINE_ARGS?.configPath,
-    path5.join(getServerRoot(), "config.yaml"),
-    path5.join(getServerRoot(), "config.yml")
+    path6.join(getServerRoot(), "config.yaml"),
+    path6.join(getServerRoot(), "config.yml")
   ].filter(Boolean);
   for (const filePath of candidates) {
     try {
-      if (fs6.existsSync(filePath)) {
-        stConfigFallbackCache = parseSimpleYaml(fs6.readFileSync(filePath, "utf8"));
+      if (fs7.existsSync(filePath)) {
+        stConfigFallbackCache = parseSimpleYaml(fs7.readFileSync(filePath, "utf8"));
         return stConfigFallbackCache;
       }
     } catch {
@@ -1236,19 +1289,19 @@ function nowIso2() {
 function settingsPathFromRequest(req) {
   const root = req?.user?.directories?.root;
   if (!root) throw new Error("User settings root directory is unavailable");
-  return path5.join(root, SETTINGS_FILE);
+  return path6.join(root, SETTINGS_FILE);
 }
 async function listFiles(directoryPath, fileExtension = ".json") {
   try {
-    const files = await fs6.promises.readdir(directoryPath);
-    return files.filter((name) => path5.extname(name).toLowerCase() === fileExtension).sort((a, b) => a.localeCompare(b));
+    const files = await fs7.promises.readdir(directoryPath);
+    return files.filter((name) => path6.extname(name).toLowerCase() === fileExtension).sort((a, b) => a.localeCompare(b));
   } catch {
     return [];
   }
 }
 async function safeStatRecordAsync(filePath, label = filePath) {
   try {
-    const stat = await fs6.promises.stat(filePath);
+    const stat = await fs7.promises.stat(filePath);
     return { label, exists: true, file: stat.isFile(), directory: stat.isDirectory(), size: stat.size, mtimeMs: Math.round(stat.mtimeMs) };
   } catch {
     return { label, exists: false };
@@ -1256,13 +1309,13 @@ async function safeStatRecordAsync(filePath, label = filePath) {
 }
 async function safeDirectoryRecords(dirPath, label, extensions = null) {
   try {
-    const names = (await fs6.promises.readdir(dirPath)).sort((a, b) => a.localeCompare(b));
+    const names = (await fs7.promises.readdir(dirPath)).sort((a, b) => a.localeCompare(b));
     const filtered = names.filter((name) => {
       if (name.startsWith(".")) return false;
-      const ext = path5.extname(name).toLowerCase();
+      const ext = path6.extname(name).toLowerCase();
       return !extensions || extensions.includes(ext);
     });
-    return await Promise.all(filtered.map((name) => safeStatRecordAsync(path5.join(dirPath, name), `${label}/${name}`)));
+    return await Promise.all(filtered.map((name) => safeStatRecordAsync(path6.join(dirPath, name), `${label}/${name}`)));
   } catch {
     return [{ label, exists: false }];
   }
@@ -1295,8 +1348,8 @@ async function readPresetsFromDirectory(directoryPath, options = {}) {
   const files = await listFiles(directoryPath, fileExtension);
   const rows = await Promise.all(files.map(async (fileName) => {
     try {
-      const filePath = path5.join(directoryPath, fileName);
-      const text = await fs6.promises.readFile(filePath, "utf8");
+      const filePath = path6.join(directoryPath, fileName);
+      const text = await fs7.promises.readFile(filePath, "utf8");
       if (fileExtension === ".json") JSON.parse(text);
       return {
         name: removeFileExtension ? fileName.replace(/\.[^/.]+$/, "") : fileName,
@@ -1317,8 +1370,8 @@ async function readAndParseFromDirectory(directoryPath, fileExtension = ".json")
   const files = await listFiles(directoryPath, fileExtension);
   const rows = await Promise.all(files.map(async (fileName) => {
     try {
-      const filePath = path5.join(directoryPath, fileName);
-      const text = await fs6.promises.readFile(filePath, "utf8");
+      const filePath = path6.join(directoryPath, fileName);
+      const text = await fs7.promises.readFile(filePath, "utf8");
       return fileExtension === ".json" ? JSON.parse(text) : text;
     } catch {
       return null;
@@ -1328,7 +1381,7 @@ async function readAndParseFromDirectory(directoryPath, fileExtension = ".json")
 }
 async function readWorldNames(directoryPath) {
   const files = await listFiles(directoryPath, ".json");
-  return files.map((item) => path5.parse(item).name);
+  return files.map((item) => path6.parse(item).name);
 }
 async function buildSettingsGetPayload(req) {
   const directories = req.user?.directories || {};
@@ -1349,7 +1402,7 @@ async function buildSettingsGetPayload(req) {
     reasoning,
     runtimeConfig
   ] = await Promise.all([
-    fs6.promises.readFile(settingsPathFromRequest(req), "utf8"),
+    fs7.promises.readFile(settingsPathFromRequest(req), "utf8"),
     readPresetsFromDirectory(directories.koboldAI_Settings, { removeFileExtension: true }),
     readPresetsFromDirectory(directories.novelAI_Settings, { removeFileExtension: true }),
     readPresetsFromDirectory(directories.openAI_Settings, { removeFileExtension: true }),
@@ -1471,8 +1524,8 @@ async function handleSettingsGetFast(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/settings-save.ts
-import fs7 from "node:fs";
-import path6 from "node:path";
+import fs8 from "node:fs";
+import path7 from "node:path";
 var SETTINGS_FILE2 = "settings.json";
 var SETTINGS_HASH_ALGORITHM = "cp-stable-sha256-v1";
 var settingsSaveEndpoint = {
@@ -1507,11 +1560,11 @@ function hashSettings(value) {
 function settingsPathFromRequest2(req) {
   const root = req?.user?.directories?.root;
   if (!root) throw new Error("User settings root directory is unavailable");
-  return path6.join(root, SETTINGS_FILE2);
+  return path7.join(root, SETTINGS_FILE2);
 }
 function readCurrentSettings(req) {
   const settingsPath = settingsPathFromRequest2(req);
-  const text = fs7.readFileSync(settingsPath, "utf8");
+  const text = fs8.readFileSync(settingsPath, "utf8");
   return { settingsPath, text, settings: JSON.parse(text) };
 }
 function cloneJson2(value) {
@@ -1695,22 +1748,22 @@ async function handleSettingsSaveFast(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/version.ts
-import fs8 from "node:fs";
-import path7 from "node:path";
+import fs9 from "node:fs";
+import path8 from "node:path";
 function getGitHeadInfo(serverRoot = getServerRoot()) {
-  const gitDir = path7.join(serverRoot, ".git");
-  const headPath = path7.join(gitDir, "HEAD");
+  const gitDir = path8.join(serverRoot, ".git");
+  const headPath = path8.join(gitDir, "HEAD");
   const head = readTextIfExists(headPath);
   let branch = null;
   let revision = null;
   let refPath = null;
   if (head.startsWith("ref:")) {
     const ref = head.slice(4).trim();
-    branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : path7.basename(ref);
-    refPath = path7.join(gitDir, ...ref.split("/"));
+    branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : path8.basename(ref);
+    refPath = path8.join(gitDir, ...ref.split("/"));
     revision = readTextIfExists(refPath) || null;
     if (!revision) {
-      const packedRefs = readTextIfExists(path7.join(gitDir, "packed-refs"));
+      const packedRefs = readTextIfExists(path8.join(gitDir, "packed-refs"));
       const line = packedRefs.split(/\r?\n/g).find((x) => x && !x.startsWith("#") && x.endsWith(` ${ref}`));
       revision = line ? line.split(" ")[0] : null;
     }
@@ -1722,9 +1775,9 @@ function getGitHeadInfo(serverRoot = getServerRoot()) {
 function getVersionSignature(ctx) {
   const serverRoot = getServerRoot();
   const git = getGitHeadInfo(serverRoot);
-  const records = [safeStatRecord(path7.join(serverRoot, "package.json"), "package.json"), safeStatRecord(git.headPath, ".git/HEAD")];
+  const records = [safeStatRecord(path8.join(serverRoot, "package.json"), "package.json"), safeStatRecord(git.headPath, ".git/HEAD")];
   if (git.refPath) records.push(safeStatRecord(git.refPath, `.git/refs/heads/${git.branch}`));
-  records.push(safeStatRecord(path7.join(git.gitDir, "packed-refs"), ".git/packed-refs"));
+  records.push(safeStatRecord(path8.join(git.gitDir, "packed-refs"), ".git/packed-refs"));
   records.push({ label: "head", value: git.head });
   records.push({ label: "revision", value: git.revision || "" });
   return signatureFromRecords(records);
@@ -1733,7 +1786,7 @@ function buildFastVersionObject(ctx) {
   const serverRoot = getServerRoot();
   let pkgVersion = "UNKNOWN";
   try {
-    const pkg = JSON.parse(fs8.readFileSync(path7.join(serverRoot, "package.json"), "utf8"));
+    const pkg = JSON.parse(fs9.readFileSync(path8.join(serverRoot, "package.json"), "utf8"));
     pkgVersion = String(pkg.version || "UNKNOWN");
   } catch {
   }
@@ -1833,14 +1886,14 @@ var inflight = /* @__PURE__ */ new Map();
 var refreshProgress = /* @__PURE__ */ new Map();
 var PROGRESS_RETENTION_MS = 30 * 1e3;
 function getDiskRoot() {
-  return path8.join(PLUGIN_DIR, "cache");
+  return path9.join(PLUGIN_DIR, "cache");
 }
 function getCacheKey2(ctx, endpointKey) {
   return `${ctx.userKey}:${endpointKey}:${sha256(ctx.bodyText).slice(0, 32)}`;
 }
 function getDiskCachePath(ctx, endpointKey) {
   const bodyHash = sha256(ctx.bodyText).slice(0, 32);
-  return path8.join(getDiskRoot(), ctx.userKey, `${endpointKey}-${bodyHash}.json`);
+  return path9.join(getDiskRoot(), ctx.userKey, `${endpointKey}-${bodyHash}.json`);
 }
 function shouldUseDiskCache(endpointKey) {
   const endpoint = ENDPOINTS[endpointKey];
@@ -1851,8 +1904,8 @@ function readDiskEntry(ctx, endpointKey) {
   if (!shouldUseDiskCache(endpointKey)) return null;
   try {
     const file = getDiskCachePath(ctx, endpointKey);
-    if (!fs9.existsSync(file)) return null;
-    const entry = JSON.parse(fs9.readFileSync(file, "utf8"));
+    if (!fs10.existsSync(file)) return null;
+    const entry = JSON.parse(fs10.readFileSync(file, "utf8"));
     if (!entry || typeof entry.bodyText !== "string") return null;
     return entry;
   } catch {
@@ -1863,16 +1916,16 @@ function writeDiskEntry(ctx, endpointKey, entry) {
   if (!shouldUseDiskCache(endpointKey)) return;
   try {
     const file = getDiskCachePath(ctx, endpointKey);
-    fs9.mkdirSync(path8.dirname(file), { recursive: true });
-    fs9.writeFileSync(file, JSON.stringify(entry), "utf8");
+    fs10.mkdirSync(path9.dirname(file), { recursive: true });
+    fs10.writeFileSync(file, JSON.stringify(entry), "utf8");
   } catch {
   }
 }
 function listDiskEntriesForUser(ctx) {
-  const dir = path8.join(getDiskRoot(), ctx.userKey);
+  const dir = path9.join(getDiskRoot(), ctx.userKey);
   try {
-    if (!fs9.existsSync(dir)) return [];
-    return fs9.readdirSync(dir).filter((name) => name.endsWith(".json")).map((name) => path8.join(dir, name));
+    if (!fs10.existsSync(dir)) return [];
+    return fs10.readdirSync(dir).filter((name) => name.endsWith(".json")).map((name) => path9.join(dir, name));
   } catch {
     return [];
   }
@@ -2006,10 +2059,10 @@ function invalidateForUser(ctx, endpointKeys) {
     }
   }
   for (const file of listDiskEntriesForUser(ctx)) {
-    const base = path8.basename(file);
+    const base = path9.basename(file);
     if (endpointKeys.some((endpointKey) => base.startsWith(`${endpointKey}-`))) {
       try {
-        fs9.rmSync(file, { force: true });
+        fs10.rmSync(file, { force: true });
         removed++;
       } catch {
       }
@@ -2025,19 +2078,19 @@ function clearCacheStores() {
 }
 
 // server-plugins/cocktail-plus/src/early-bridge.ts
-import fs10 from "node:fs";
-import path9 from "node:path";
+import fs11 from "node:fs";
+import path10 from "node:path";
 var MARKER_START = "<!-- cocktail-plus early bridge start -->";
 var MARKER_END = "<!-- cocktail-plus early bridge end -->";
 var BRIDGE_SCRIPT_ID = "cocktail-plus-early-bridge";
 var BRIDGE_SRC = `${API_PREFIX}/early/bridge.js`;
-var BACKUP_DIR = path9.join(PLUGIN_DIR, "backups");
+var BACKUP_DIR = path10.join(PLUGIN_DIR, "backups");
 var MODULE_IMPORT_MAP_ID = "cocktail-plus-module-import-map";
 var MODULE_PROXY_ENTRY_PATHS = ["/scripts/i18n.js", "/script.js"];
 var MODULE_PROXY_IMPORT_PATHS = ["/script.js", "/scripts/i18n.js", "/scripts/system-messages.js", "/scripts/extensions.js", "/scripts/welcome-screen.js"];
 var MODULE_SCRIPT_PROXY_EXCLUDED_PREFIXES = ["/scripts/extensions/third-party/"];
 function getIndexPath() {
-  return path9.join(getServerRoot(), "public", "index.html");
+  return path10.join(getServerRoot(), "public", "index.html");
 }
 function normalizePublicModulePath(value) {
   let out = String(value || "").replace(/\\/g, "/");
@@ -2096,8 +2149,8 @@ function replaceScriptSrcAttribute(tag, nextSrc) {
 }
 function readIndexHtml() {
   const indexPath = getIndexPath();
-  if (!fs10.existsSync(indexPath)) return "";
-  return fs10.readFileSync(indexPath, "utf8");
+  if (!fs11.existsSync(indexPath)) return "";
+  return fs11.readFileSync(indexPath, "utf8");
 }
 function countOccurrences(text, needle) {
   if (!needle) return 0;
@@ -2110,9 +2163,9 @@ function escapeRegExp(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function makeBackup(html) {
-  fs10.mkdirSync(BACKUP_DIR, { recursive: true });
-  const file = path9.join(BACKUP_DIR, `index.html.${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.bak`);
-  fs10.writeFileSync(file, html, "utf8");
+  fs11.mkdirSync(BACKUP_DIR, { recursive: true });
+  const file = path10.join(BACKUP_DIR, `index.html.${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.bak`);
+  fs11.writeFileSync(file, html, "utf8");
   return file;
 }
 function rewriteIndexModuleProxyTags(html) {
@@ -2192,7 +2245,7 @@ function installEarlyBridge(options = {}) {
   }
   let backup = null;
   if (!options.noBackup) backup = makeBackup(html);
-  fs10.writeFileSync(indexPath, finalHtml, "utf8");
+  fs11.writeFileSync(indexPath, finalHtml, "utf8");
   return { ok: true, changed: true, mode, backup, status: getEarlyBridgeStatus() };
 }
 function uninstallEarlyBridge(options = {}) {
@@ -2208,7 +2261,7 @@ function uninstallEarlyBridge(options = {}) {
   const nextHtml = restoreIndexModuleProxyTags(html.replace(markerRegex, "").replace(/\n{3,}/g, "\n\n"));
   let backup = null;
   if (!options.noBackup) backup = makeBackup(html);
-  fs10.writeFileSync(indexPath, nextHtml, "utf8");
+  fs11.writeFileSync(indexPath, nextHtml, "utf8");
   return { ok: true, changed: true, backup, status: getEarlyBridgeStatus() };
 }
 function makeFastRoutesLiteral() {
@@ -2217,8 +2270,8 @@ function makeFastRoutesLiteral() {
 function makeTemplatePreloadList() {
   const fallback = ["help.html", "hotkeys.html", "formatting.html", "welcome.html", "welcomePrompt.html", "assistantNote.html"];
   try {
-    const dir = path9.join(getServerRoot(), "public", "scripts", "templates");
-    const names = fs10.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
+    const dir = path10.join(getServerRoot(), "public", "scripts", "templates");
+    const names = fs11.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
     const list = names.length ? names : fallback;
     return list.map((name) => `/scripts/templates/${name}`);
   } catch {
@@ -4999,8 +5052,8 @@ function autoEnsureEarlyBridge() {
 }
 
 // server-plugins/cocktail-plus/src/routes.ts
-import fs18 from "node:fs";
-import path17 from "node:path";
+import fs19 from "node:fs";
+import path18 from "node:path";
 
 // server-plugins/cocktail-plus/src/fast-handler.ts
 function makeEntryFromBody(ctx, endpointKey, status, statusText, headers, bodyText, signature, durationMs, transform = null) {
@@ -5227,16 +5280,16 @@ async function handleFast(req, res, endpointKey) {
 }
 
 // server-plugins/cocktail-plus/src/service-worker.ts
-import fs11 from "node:fs";
-import path10 from "node:path";
+import fs12 from "node:fs";
+import path11 from "node:path";
 function makeFastRoutesLiteral2() {
   return ENDPOINT_LIST.map((endpoint) => `  [${JSON.stringify(endpoint.originalPath)}, { path: PREFIX + ${JSON.stringify(endpoint.fastPath)}, method: ${JSON.stringify(endpoint.method)} }]`).join(",\n");
 }
 function makeTemplatePreloadList2() {
   const fallback = ["help.html", "hotkeys.html", "formatting.html", "welcome.html", "welcomePrompt.html", "assistantNote.html"];
   try {
-    const dir = path10.join(getServerRoot(), "public", "scripts", "templates");
-    const names = fs11.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
+    const dir = path11.join(getServerRoot(), "public", "scripts", "templates");
+    const names = fs12.readdirSync(dir).filter((name) => name.endsWith(".html")).sort((a, b) => a.localeCompare(b));
     const list = names.length ? names : fallback;
     return list.map((name) => `/scripts/templates/${name}`);
   } catch {
@@ -5883,8 +5936,8 @@ self.addEventListener('fetch', (event) => {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/characters-edit.ts
-import fs12 from "node:fs";
-import path11 from "node:path";
+import fs13 from "node:fs";
+import path12 from "node:path";
 var JSON_CONTENT_TYPE3 = "application/json; charset=utf-8";
 var characterEditEndpoint = {
   key: "character-edit",
@@ -5918,8 +5971,8 @@ function extractPngTextChunks2(buffer) {
   return chunks;
 }
 async function readCharacterRawJson(directories, avatar) {
-  const filePath = path11.join(directories.characters, path11.basename(avatar));
-  const buffer = await fs12.promises.readFile(filePath);
+  const filePath = path12.join(directories.characters, path12.basename(avatar));
+  const buffer = await fs13.promises.readFile(filePath);
   const chunks = extractPngTextChunks2(buffer);
   const selected = chunks.find((c) => c.keyword === "ccv3") || chunks.find((c) => c.keyword === "chara");
   if (!selected) throw new Error("No character metadata found");
@@ -6009,8 +6062,8 @@ async function handleCharacterEditFast(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/characters-get.ts
-import fs13 from "node:fs";
-import path12 from "node:path";
+import fs14 from "node:fs";
+import path13 from "node:path";
 var JSON_CONTENT_TYPE4 = "application/json; charset=utf-8";
 var HISTORY_LIMIT = 3;
 var characterGetEndpoint = {
@@ -6034,8 +6087,8 @@ function getClientHash(req) {
 }
 function getCharacterSignature(req, avatar) {
   try {
-    const filePath = path12.join(req.user?.directories?.characters || "", path12.basename(avatar));
-    const stat = fs13.statSync(filePath);
+    const filePath = path13.join(req.user?.directories?.characters || "", path13.basename(avatar));
+    const stat = fs14.statSync(filePath);
     return sha256(stableStringify({ avatar, size: stat.size, mtimeMs: Math.round(stat.mtimeMs) }));
   } catch {
     return "";
@@ -6185,8 +6238,8 @@ async function handleCharacterGetFast(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/endpoints/recent-chats.ts
-import fs14 from "node:fs";
-import path13 from "node:path";
+import fs15 from "node:fs";
+import path14 from "node:path";
 import readline from "node:readline";
 var JSON_CONTENT_TYPE5 = "application/json; charset=utf-8";
 var DEFAULT_DISPLAYED = 3;
@@ -6304,7 +6357,7 @@ function sendRecentPayload(req, res, entry, meta = {}) {
 async function statEntityForSignature(ctx, chatFile) {
   try {
     if (chatFile.pngFile && ctx.directories?.characters) {
-      const stat = await safeStat(path13.join(ctx.directories.characters, chatFile.pngFile));
+      const stat = await safeStat(path14.join(ctx.directories.characters, chatFile.pngFile));
       return { avatar: chatFile.pngFile, size: stat?.size || 0, mtime: Math.round(stat?.mtimeMs || 0) };
     }
     if (chatFile.groupId) {
@@ -6330,7 +6383,7 @@ async function buildRecentSignature(ctx, selectedFiles, max, pinnedChats) {
   return sha256(stableStringify({ max, pinned: normalizePinnedForKey(pinnedChats), files }));
 }
 function isPinnedChat(chatFile, pinnedChats) {
-  const base = path13.basename(chatFile.filePath);
+  const base = path14.basename(chatFile.filePath);
   return pinnedChats.some((p) => p && p.file_name === base && (p.avatar === chatFile.pngFile || p.group === chatFile.groupId));
 }
 function getThumbnailUrl(type, file) {
@@ -6356,7 +6409,7 @@ function formatDateLong(value) {
 }
 async function safeStat(filePath) {
   try {
-    const stat = await fs14.promises.stat(filePath);
+    const stat = await fs15.promises.stat(filePath);
     return stat.isFile() ? stat : null;
   } catch {
     return null;
@@ -6364,8 +6417,8 @@ async function safeStat(filePath) {
 }
 async function listJsonlFiles(directory) {
   try {
-    const entries2 = await fs14.promises.readdir(directory, { withFileTypes: true });
-    return entries2.filter((e) => e.isFile() && path13.extname(e.name).toLowerCase() === ".jsonl").map((e) => e.name);
+    const entries2 = await fs15.promises.readdir(directory, { withFileTypes: true });
+    return entries2.filter((e) => e.isFile() && path14.extname(e.name).toLowerCase() === ".jsonl").map((e) => e.name);
   } catch {
     return [];
   }
@@ -6376,24 +6429,24 @@ async function collectCharacterChatFiles(ctx, allChatFiles) {
   if (!charactersDir || !chatsRoot) return;
   let entries2 = [];
   try {
-    entries2 = await fs14.promises.readdir(charactersDir, { withFileTypes: true });
+    entries2 = await fs15.promises.readdir(charactersDir, { withFileTypes: true });
   } catch {
     return;
   }
-  const pngFiles = entries2.filter((e) => e.isFile() && path13.extname(e.name).toLowerCase() === ".png").map((e) => e.name);
+  const pngFiles = entries2.filter((e) => e.isFile() && path14.extname(e.name).toLowerCase() === ".png").map((e) => e.name);
   await Promise.all(pngFiles.map(async (pngFile) => {
     const chatsDirectory = pngFile.replace(/\.png$/i, "");
-    const pathToChats = path13.join(chatsRoot, chatsDirectory);
+    const pathToChats = path14.join(chatsRoot, chatsDirectory);
     let dirStat = null;
     try {
-      dirStat = await fs14.promises.stat(pathToChats);
+      dirStat = await fs15.promises.stat(pathToChats);
     } catch {
       return;
     }
     if (!dirStat.isDirectory()) return;
     const jsonlFiles = await listJsonlFiles(pathToChats);
     await Promise.all(jsonlFiles.map(async (file) => {
-      const filePath = path13.join(pathToChats, file);
+      const filePath = path14.join(pathToChats, file);
       const stat = await safeStat(filePath);
       if (stat) allChatFiles.push({ pngFile, filePath, mtime: stat.mtimeMs, size: stat.size });
     }));
@@ -6405,19 +6458,19 @@ async function collectGroupChatFiles(ctx, allChatFiles, groupInfoMap) {
   if (!groupsDir || !groupChatsDir) return;
   let entries2 = [];
   try {
-    entries2 = await fs14.promises.readdir(groupsDir, { withFileTypes: true });
+    entries2 = await fs15.promises.readdir(groupsDir, { withFileTypes: true });
   } catch {
     return;
   }
-  const groupFiles = entries2.filter((e) => e.isFile() && path13.extname(e.name).toLowerCase() === ".json").map((e) => e.name);
+  const groupFiles = entries2.filter((e) => e.isFile() && path14.extname(e.name).toLowerCase() === ".json").map((e) => e.name);
   await Promise.all(groupFiles.map(async (groupFile) => {
     try {
-      const groupPath = path13.join(groupsDir, groupFile);
-      const groupData = JSON.parse(await fs14.promises.readFile(groupPath, "utf8"));
+      const groupPath = path14.join(groupsDir, groupFile);
+      const groupData = JSON.parse(await fs15.promises.readFile(groupPath, "utf8"));
       if (!groupData?.id) return;
       groupInfoMap.set(groupData.id, {
         id: groupData.id,
-        name: groupData.name || path13.parse(groupFile).name,
+        name: groupData.name || path14.parse(groupFile).name,
         avatar_url: groupData.avatar_url || "",
         chats: Array.isArray(groupData.chats) ? groupData.chats.slice() : [],
         members: Array.isArray(groupData.members) ? groupData.members.slice() : [],
@@ -6425,7 +6478,7 @@ async function collectGroupChatFiles(ctx, allChatFiles, groupInfoMap) {
       });
       if (!Array.isArray(groupData.chats)) return;
       await Promise.all(groupData.chats.map(async (chat) => {
-        const filePath = path13.join(groupChatsDir, `${chat}.jsonl`);
+        const filePath = path14.join(groupChatsDir, `${chat}.jsonl`);
         const stat = await safeStat(filePath);
         if (stat) allChatFiles.push({ groupId: groupData.id, filePath, mtime: stat.mtimeMs, size: stat.size });
       }));
@@ -6438,19 +6491,19 @@ async function collectRootChatFiles(ctx, allChatFiles) {
   if (!chatsRoot) return;
   let entries2 = [];
   try {
-    entries2 = await fs14.promises.readdir(chatsRoot, { withFileTypes: true });
+    entries2 = await fs15.promises.readdir(chatsRoot, { withFileTypes: true });
   } catch {
     return;
   }
-  const rootJsonlFiles = entries2.filter((e) => e.isFile() && path13.extname(e.name).toLowerCase() === ".jsonl").map((e) => e.name);
+  const rootJsonlFiles = entries2.filter((e) => e.isFile() && path14.extname(e.name).toLowerCase() === ".jsonl").map((e) => e.name);
   await Promise.all(rootJsonlFiles.map(async (file) => {
-    const filePath = path13.join(chatsRoot, file);
+    const filePath = path14.join(chatsRoot, file);
     const stat = await safeStat(filePath);
     if (stat) allChatFiles.push({ filePath, mtime: stat.mtimeMs, size: stat.size });
   }));
 }
 async function getChatInfoFast(chatFile) {
-  const parsedPath = path13.parse(chatFile.filePath);
+  const parsedPath = path14.parse(chatFile.filePath);
   const stat = await safeStat(chatFile.filePath);
   if (!stat) return null;
   const chatData = {
@@ -6466,7 +6519,7 @@ async function getChatInfoFast(chatFile) {
   };
   if (stat.size === 0) return chatData;
   return await new Promise((resolve) => {
-    const fileStream = fs14.createReadStream(chatFile.filePath);
+    const fileStream = fs15.createReadStream(chatFile.filePath);
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
     let lastLine = "";
     let itemCounter = 0;
@@ -6528,15 +6581,15 @@ function extractPngTextChunks3(buffer) {
 async function readCharacterName(ctx, avatarFile) {
   if (!avatarFile) return "";
   try {
-    const filePath = path13.join(ctx.directories.characters, avatarFile);
-    const buffer = await fs14.promises.readFile(filePath);
+    const filePath = path14.join(ctx.directories.characters, avatarFile);
+    const buffer = await fs15.promises.readFile(filePath);
     const chunks = extractPngTextChunks3(buffer);
     const selected = chunks.find((c) => c.keyword === "ccv3") || chunks.find((c) => c.keyword === "chara");
-    if (!selected) return path13.basename(avatarFile, path13.extname(avatarFile));
+    if (!selected) return path14.basename(avatarFile, path14.extname(avatarFile));
     const raw = JSON.parse(Buffer.from(selected.text, "base64").toString("utf8"));
-    return raw?.data?.name || raw?.name || path13.basename(avatarFile, path13.extname(avatarFile));
+    return raw?.data?.name || raw?.name || path14.basename(avatarFile, path14.extname(avatarFile));
   } catch {
-    return path13.basename(avatarFile, path13.extname(avatarFile));
+    return path14.basename(avatarFile, path14.extname(avatarFile));
   }
 }
 async function enrichRecentChat(ctx, chatInfo, chatFile, index, pinned) {
@@ -6544,7 +6597,7 @@ async function enrichRecentChat(ctx, chatInfo, chatFile, index, pinned) {
   const groupInfo = isGroup ? ctx.groupInfoMap?.get(chatFile.groupId) || {} : null;
   const charName = isGroup ? groupInfo?.name || chatFile.groupId || "" : await readCharacterName(ctx, chatFile.pngFile);
   const lastMes = chatInfo.last_mes || chatFile.mtime;
-  const fileName = chatInfo.file_name || path13.basename(chatFile.filePath);
+  const fileName = chatInfo.file_name || path14.basename(chatFile.filePath);
   const avatar = chatInfo.avatar || chatFile.pngFile || "";
   const group = chatInfo.group || chatFile.groupId || "";
   return {
@@ -6624,11 +6677,11 @@ async function handleRecentChatsFast(req, res) {
 
 // server-plugins/cocktail-plus/src/module-proxy.ts
 import crypto2 from "node:crypto";
-import fs15 from "node:fs";
-import path14 from "node:path";
+import fs16 from "node:fs";
+import path15 from "node:path";
 var TARGET_PROXY_MODULE_PATHS = /* @__PURE__ */ new Set(["/script.js", "/scripts/i18n.js", "/scripts/system-messages.js", "/scripts/extensions.js", "/scripts/welcome-screen.js"]);
 function getPublicRoot() {
-  return path14.join(getServerRoot(), "public");
+  return path15.join(getServerRoot(), "public");
 }
 function normalizePublicPath(value) {
   const publicRoot = getPublicRoot();
@@ -6637,8 +6690,8 @@ function normalizePublicPath(value) {
   raw = decodeURIComponent(raw);
   if (!raw.endsWith(".js")) throw new Error("Only JavaScript modules can be proxied");
   if (raw.includes("\0")) throw new Error("Invalid module path");
-  const fullPath = path14.resolve(publicRoot, `.${raw}`);
-  if (!fullPath.startsWith(publicRoot + path14.sep) && fullPath !== publicRoot) {
+  const fullPath = path15.resolve(publicRoot, `.${raw}`);
+  if (!fullPath.startsWith(publicRoot + path15.sep) && fullPath !== publicRoot) {
     throw new Error("Module path escapes public root");
   }
   return { publicPath: raw.replace(/\\/g, "/"), fullPath };
@@ -6652,8 +6705,8 @@ function toProxySpecifier(currentPublicPath, specifier) {
   if (!specifier.startsWith(".") && !specifier.startsWith("/")) return specifier;
   const [withoutHash, hash = ""] = specifier.split("#");
   const [withoutQuery, query = ""] = withoutHash.split("?");
-  const baseDir = path14.posix.dirname(currentPublicPath);
-  const resolved = specifier.startsWith("/") ? path14.posix.normalize(withoutQuery) : path14.posix.normalize(path14.posix.join(baseDir, withoutQuery));
+  const baseDir = path15.posix.dirname(currentPublicPath);
+  const resolved = specifier.startsWith("/") ? path15.posix.normalize(withoutQuery) : path15.posix.normalize(path15.posix.join(baseDir, withoutQuery));
   const normalized = resolved.startsWith("/") ? resolved : `/${resolved}`;
   const suffix = `${query ? `?${query}` : ""}${hash ? `#${hash}` : ""}`;
   if (normalized === "/lib.js" || normalized.startsWith("/lib/")) {
@@ -7218,7 +7271,7 @@ async function handleModuleProxy(req, res) {
   try {
     const startedAt = Date.now();
     const { publicPath, fullPath } = normalizePublicPath(req.query?.path || req.path || "");
-    let source = await fs15.promises.readFile(fullPath, "utf8");
+    let source = await fs16.promises.readFile(fullPath, "utf8");
     source = applyTargetedPatches(source, publicPath);
     source = rewriteModuleSpecifiers(source, publicPath);
     source += `
@@ -7242,8 +7295,8 @@ async function handleModuleProxy(req, res) {
 }
 
 // server-plugins/cocktail-plus/src/source-patches.ts
-import fs16 from "node:fs";
-import path15 from "node:path";
+import fs17 from "node:fs";
+import path16 from "node:path";
 var CHAT_INFO_ENOENT_SENTINEL = "Chat file no longer exists, skipping";
 var CHAT_STREAM_ENOENT_SENTINEL = "Chat file disappeared while reading, skipping";
 var ORIGINAL_STAT_LINE = `        const stats = await fs.promises.stat(pathToFile);`;
@@ -7273,14 +7326,14 @@ var PATCHED_STREAM_BLOCK = `        const fileStream = fs.createReadStream(pathT
         });
         const rl = readline.createInterface({`;
 function getChatsEndpointPath() {
-  return path15.join(getServerRoot(), "src", "endpoints", "chats.js");
+  return path16.join(getServerRoot(), "src", "endpoints", "chats.js");
 }
 function readChatsSource(filePath) {
-  if (!fs16.existsSync(filePath)) return { exists: false, text: "" };
-  return { exists: true, text: fs16.readFileSync(filePath, "utf8") };
+  if (!fs17.existsSync(filePath)) return { exists: false, text: "" };
+  return { exists: true, text: fs17.readFileSync(filePath, "utf8") };
 }
 function writeUtf8NoBom(filePath, text) {
-  fs16.writeFileSync(filePath, text, { encoding: "utf8" });
+  fs17.writeFileSync(filePath, text, { encoding: "utf8" });
 }
 function replaceOnce(text, search, replacement, label) {
   if (!text.includes(search)) throw new Error(`${label} pattern not found`);
@@ -7331,7 +7384,7 @@ function applyChatsEnoentPatch() {
   if (!status.ok) return { ...status, changed: false, action: "apply" };
   if (!status.exists) return { ...status, ok: false, changed: false, action: "apply", error: "chats.js not found" };
   const filePath = status.filePath;
-  let text = fs16.readFileSync(filePath, "utf8");
+  let text = fs17.readFileSync(filePath, "utf8");
   const original = text;
   if (!text.includes(CHAT_INFO_ENOENT_SENTINEL)) {
     text = replaceOnce(text, ORIGINAL_STAT_LINE, PATCHED_STAT_BLOCK, "stat");
@@ -7350,7 +7403,7 @@ function revertChatsEnoentPatch() {
   if (!status.ok) return { ...status, changed: false, action: "revert" };
   if (!status.exists) return { ...status, ok: false, changed: false, action: "revert", error: "chats.js not found" };
   const filePath = status.filePath;
-  let text = fs16.readFileSync(filePath, "utf8");
+  let text = fs17.readFileSync(filePath, "utf8");
   const original = text;
   text = removeStatPatch(text);
   text = removeStreamPatch(text);
@@ -7372,9 +7425,9 @@ function autoApplySourcePatches() {
 
 // server-plugins/cocktail-plus/src/frontend-update.ts
 import childProcess from "node:child_process";
-import fs17 from "node:fs";
+import fs18 from "node:fs";
 import os from "node:os";
-import path16 from "node:path";
+import path17 from "node:path";
 var JSON_CONTENT_TYPE6 = "application/json; charset=utf-8";
 var FRONTEND_REPOS = Object.freeze([
   "https://github.com/Lianues/cocktail-plus.git",
@@ -7388,13 +7441,13 @@ function sendJson3(res, status, data) {
   res.status(status).type(JSON_CONTENT_TYPE6).send(JSON.stringify(data));
 }
 function getFrontendExtensionPath(req, isGlobal) {
-  const base = isGlobal ? path16.join(getServerRoot(), "public", "scripts", "extensions", "third-party") : req.user?.directories?.extensions;
+  const base = isGlobal ? path17.join(getServerRoot(), "public", "scripts", "extensions", "third-party") : req.user?.directories?.extensions;
   if (!base) throw new Error("User extensions directory is not available");
-  return path16.join(base, PLUGIN_ID);
+  return path17.join(base, PLUGIN_ID);
 }
 function readVersionFromManifest(dir) {
   try {
-    const raw = fs17.readFileSync(path16.join(dir, "manifest.json"), "utf8");
+    const raw = fs18.readFileSync(path17.join(dir, "manifest.json"), "utf8");
     const version = String(JSON.parse(raw)?.version || "").trim();
     return version || "";
   } catch {
@@ -7404,11 +7457,11 @@ function readVersionFromManifest(dir) {
 function assertFrontendSource(dir) {
   const required = [
     "manifest.json",
-    path16.join("dist", "index.js"),
-    path16.join("server-plugins", PLUGIN_ID, "index.mjs")
+    path17.join("dist", "index.js"),
+    path17.join("server-plugins", PLUGIN_ID, "index.mjs")
   ];
   for (const rel of required) {
-    if (!fs17.existsSync(path16.join(dir, rel))) throw new Error(`Downloaded repository is missing ${rel}`);
+    if (!fs18.existsSync(path17.join(dir, rel))) throw new Error(`Downloaded repository is missing ${rel}`);
   }
 }
 function runGit(args, cwd = process.cwd()) {
@@ -7426,9 +7479,9 @@ function runGit(args, cwd = process.cwd()) {
 async function cloneFrontendSource(tempRoot) {
   let lastError = null;
   for (const repo of FRONTEND_REPOS) {
-    const cloneDir = path16.join(tempRoot, "repo");
+    const cloneDir = path17.join(tempRoot, "repo");
     try {
-      fs17.rmSync(cloneDir, { recursive: true, force: true });
+      fs18.rmSync(cloneDir, { recursive: true, force: true });
       await runGit(["clone", "--depth", "1", repo, cloneDir]);
       assertFrontendSource(cloneDir);
       return { sourceDir: cloneDir, repo };
@@ -7439,41 +7492,41 @@ async function cloneFrontendSource(tempRoot) {
   throw new Error(`Failed to download cocktail-plus from GitHub/Gitee${lastError ? `: ${lastError.message}` : ""}`);
 }
 function copyTree(source, destination) {
-  const stat = fs17.statSync(source);
+  const stat = fs18.statSync(source);
   if (stat.isDirectory()) {
-    fs17.mkdirSync(destination, { recursive: true });
-    for (const entry of fs17.readdirSync(source, { withFileTypes: true })) {
+    fs18.mkdirSync(destination, { recursive: true });
+    for (const entry of fs18.readdirSync(source, { withFileTypes: true })) {
       if (SKIP_NAMES.has(entry.name)) continue;
-      copyTree(path16.join(source, entry.name), path16.join(destination, entry.name));
+      copyTree(path17.join(source, entry.name), path17.join(destination, entry.name));
     }
     return;
   }
-  fs17.mkdirSync(path16.dirname(destination), { recursive: true });
-  fs17.copyFileSync(source, destination);
+  fs18.mkdirSync(path17.dirname(destination), { recursive: true });
+  fs18.copyFileSync(source, destination);
 }
 function replaceDirectory(source, target) {
-  const parent = path16.dirname(target);
-  fs17.mkdirSync(parent, { recursive: true });
-  const backupRoot = path16.join(parent, ".cocktail-plus-backups");
+  const parent = path17.dirname(target);
+  fs18.mkdirSync(parent, { recursive: true });
+  const backupRoot = path17.join(parent, ".cocktail-plus-backups");
   let backupPath = "";
-  if (fs17.existsSync(target)) {
-    fs17.mkdirSync(backupRoot, { recursive: true });
-    backupPath = path16.join(backupRoot, `${PLUGIN_ID}-frontend-${stamp()}`);
-    fs17.renameSync(target, backupPath);
+  if (fs18.existsSync(target)) {
+    fs18.mkdirSync(backupRoot, { recursive: true });
+    backupPath = path17.join(backupRoot, `${PLUGIN_ID}-frontend-${stamp()}`);
+    fs18.renameSync(target, backupPath);
   }
   try {
     copyTree(source, target);
   } catch (error) {
-    fs17.rmSync(target, { recursive: true, force: true });
-    if (backupPath && fs17.existsSync(backupPath) && !fs17.existsSync(target)) {
-      fs17.renameSync(backupPath, target);
+    fs18.rmSync(target, { recursive: true, force: true });
+    if (backupPath && fs18.existsSync(backupPath) && !fs18.existsSync(target)) {
+      fs18.renameSync(backupPath, target);
     }
     throw error;
   }
   return backupPath;
 }
 async function handleFrontendUpdate(req, res) {
-  const tempRoot = fs17.mkdtempSync(path16.join(os.tmpdir(), "cocktail-plus-frontend-update-"));
+  const tempRoot = fs18.mkdtempSync(path17.join(os.tmpdir(), "cocktail-plus-frontend-update-"));
   try {
     const isGlobal = !!req.body?.global;
     const target = getFrontendExtensionPath(req, isGlobal);
@@ -7495,7 +7548,7 @@ async function handleFrontendUpdate(req, res) {
     return sendJson3(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
   } finally {
     try {
-      fs17.rmSync(tempRoot, { recursive: true, force: true });
+      fs18.rmSync(tempRoot, { recursive: true, force: true });
     } catch {
     }
   }
@@ -7678,13 +7731,13 @@ function registerRoutes(router) {
       res.status(404).type("text/plain").send("Not found");
       return;
     }
-    const filePath = path17.join(PLUGIN_DIR, "scripts", fileName);
-    if (!fs18.existsSync(filePath)) {
+    const filePath = path18.join(PLUGIN_DIR, "scripts", fileName);
+    if (!fs19.existsSync(filePath)) {
       res.status(404).type("text/plain").send("Helper script not found");
       return;
     }
     res.setHeader("cache-control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-    res.type("text/plain; charset=utf-8").send(fs18.readFileSync(filePath, "utf8"));
+    res.type("text/plain; charset=utf-8").send(fs19.readFileSync(filePath, "utf8"));
   });
   router.get("/module", async (req, res) => handleModuleProxy(req, res));
   router.post("/early/status", async (_req, res) => {
